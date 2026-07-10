@@ -40,6 +40,12 @@ jobs:
 
           cd hf_space
 
+          if [ -f requirements.txt ]; then
+            grep -viE '^[[:space:]]*gradio([<=>[:space:]\[]|$)' requirements.txt > requirements_hf.txt || true
+            grep -viE '^[[:space:]]*gradio[-_]?client([<=>[:space:]\[]|$)' requirements_hf.txt > requirements.txt || true
+            rm -f requirements_hf.txt
+          fi
+
           if [ -f README.md ]; then
             cp README.md README_body.md
           else
