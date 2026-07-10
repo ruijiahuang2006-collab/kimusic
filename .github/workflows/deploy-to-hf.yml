@@ -58,6 +58,7 @@ jobs:
           printf '%s\n' 'colorFrom: blue' >> README.md
           printf '%s\n' 'colorTo: indigo' >> README.md
           printf '%s\n' 'sdk: gradio' >> README.md
+          printf '%s\n' 'python_version: "3.10"' >> README.md
           printf '%s\n' 'app_file: app.py' >> README.md
           printf '%s\n' 'pinned: false' >> README.md
           printf '%s\n' '---' >> README.md
