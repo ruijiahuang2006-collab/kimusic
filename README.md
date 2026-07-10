@@ -154,10 +154,4 @@ The following files provide the main reviewer-facing artifacts referenced by the
 - Synthetic example session JSON: data/example_session/example_session_synthetic.json
 - Aggregate Study 1/2 results: data/aggregate_analysis/
 - Demo audio sample: demo_audio/demo_session_audio.mp3
-- High-resolution figures: igures/
-
-## Repository Artifact Pointers
-
-- Example synthetic session JSON: `data/example_session/example_session_synthetic.json`
-- Kimusic blueprint construction interface: `docs/v5_appendix_D2_kimusic_blueprint_interface.md`
-- LLM judge prompt: `docs/v5_appendix_F_llm_judge_prompt.md`
+- High-resolution figures: figures/
