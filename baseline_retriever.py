@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import os
 import random
 
@@ -103,7 +103,7 @@ def retrieve_baseline_track(
     track = random.choice(available).copy()
     filename = track.get("filename")
 
-    # 寮哄埗浣跨敤鏈嶅姟鍣ㄧ湡瀹?mp3 鐩綍锛屼笉鍐嶄娇鐢?JSON 閲岀殑鏃?file_path
+    # 强制使用服务器真实 mp3 目录，不再使用 JSON 里的旧 file_path
     relative_path = os.path.join(os.path.dirname(__file__), "../toy_dataset/mp3", filename) if filename else track.get("file_path")
     full_path = os.path.abspath(relative_path) if relative_path else None
 
@@ -131,4 +131,3 @@ def retrieve_baseline_track(
         "retrieval_keywords": retrieval_keywords,
         "avoid_keywords": avoid_keywords,
     }
-

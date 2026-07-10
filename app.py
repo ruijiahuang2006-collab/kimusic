@@ -1,18 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import os
 import copy
 import gradio as gr
+from demo_security import make_security_middleware
 from dotenv import load_dotenv
 import http.client
 import json
 import re
 import random
 import uuid
-import prompts  # 鍔ㄦ€佽鍙栧綋鍓嶈瑷€涓庡垎绫绘彁绀鸿瘝
+from urllib.parse import urlparse
+import prompts  # 动态读取当前语言与分类提示词
 from typing import Any, List
 from music_db import MusicDatabase
 from memory_manager import MemoryManager
-from gim_audio_agent import GIMAudioAgent  # 鏂板锛氬鍏IM闊抽缂栬緫浠ｇ悊
+from gim_audio_agent import GIMAudioAgent  # 新增：导入GIM音频编辑代理
 from baseline_retriever import retrieve_baseline_track
 from kimusic_client import create_proxy_generated_track
 from kimusic_renderer import render_from_session_data
@@ -70,32 +72,47 @@ except Exception as _e:
 # Load environment variables
 load_dotenv()
 
-# 鍦ㄦ枃浠堕《閮ㄦ坊鍔犵姸鎬佽窡韪彉閲?PREVIOUS_STATE = None
+
+def make_llm_connection(timeout=None):
+    """Create a connection to an OpenAI-compatible chat-completions endpoint."""
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    parsed = urlparse(base_url)
+    scheme = parsed.scheme or "https"
+    host = parsed.netloc or parsed.path
+    base_path = parsed.path.rstrip("/")
+    api_path = f"{base_path}/chat/completions" if base_path else "/v1/chat/completions"
+    conn_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+    if timeout is None:
+        return conn_cls(host), api_path
+    return conn_cls(host, timeout=timeout), api_path
+
+# 在文件顶部添加状态跟踪变量
+PREVIOUS_STATE = None
 CURRENT_STATE = None
-# 鍏ㄥ眬鍙橀噺锛岀敤浜庢帶鍒禪I鏇存柊
+# 全局变量，用于控制UI更新
 SHOULD_UPDATE_MUSIC_UI = False
 
 PANAS_ITEM_LABELS = {
-    "interested": {"en": "Interested", "zh": "鎰熷叴瓒?},
-    "distressed": {"en": "Distressed", "zh": "蹇冪儲"},
-    "excited": {"en": "Excited", "zh": "鍏村"},
-    "upset": {"en": "Upset", "zh": "闅惧彈"},
-    "strong": {"en": "Strong", "zh": "寮鸿€屾湁鍔?},
-    "guilty": {"en": "Guilty", "zh": "鍐呯枤"},
-    "scared": {"en": "Scared", "zh": "瀹虫€?},
-    "hostile": {"en": "Hostile", "zh": "鏁屾剰"},
-    "enthusiastic": {"en": "Enthusiastic", "zh": "鐑儏"},
-    "proud": {"en": "Proud", "zh": "鑷豹"},
-    "irritable": {"en": "Irritable", "zh": "鐑﹁簛"},
-    "alert": {"en": "Alert", "zh": "璀﹁"},
-    "ashamed": {"en": "Ashamed", "zh": "缇炴劎"},
-    "inspired": {"en": "Inspired", "zh": "鍙楅紦鑸?},
-    "nervous": {"en": "Nervous", "zh": "绱у紶"},
-    "determined": {"en": "Determined", "zh": "鍧氬畾"},
-    "attentive": {"en": "Attentive", "zh": "涓撴敞"},
-    "jittery": {"en": "Jittery", "zh": "鍧愮珛涓嶅畨"},
-    "active": {"en": "Active", "zh": "娲昏穬"},
-    "afraid": {"en": "Afraid", "zh": "鎭愭儳"},
+    "interested": {"en": "Interested", "zh": "感兴趣"},
+    "distressed": {"en": "Distressed", "zh": "心烦"},
+    "excited": {"en": "Excited", "zh": "兴奋"},
+    "upset": {"en": "Upset", "zh": "难受"},
+    "strong": {"en": "Strong", "zh": "强而有力"},
+    "guilty": {"en": "Guilty", "zh": "内疚"},
+    "scared": {"en": "Scared", "zh": "害怕"},
+    "hostile": {"en": "Hostile", "zh": "敌意"},
+    "enthusiastic": {"en": "Enthusiastic", "zh": "热情"},
+    "proud": {"en": "Proud", "zh": "自豪"},
+    "irritable": {"en": "Irritable", "zh": "烦躁"},
+    "alert": {"en": "Alert", "zh": "警觉"},
+    "ashamed": {"en": "Ashamed", "zh": "羞愧"},
+    "inspired": {"en": "Inspired", "zh": "受鼓舞"},
+    "nervous": {"en": "Nervous", "zh": "紧张"},
+    "determined": {"en": "Determined", "zh": "坚定"},
+    "attentive": {"en": "Attentive", "zh": "专注"},
+    "jittery": {"en": "Jittery", "zh": "坐立不安"},
+    "active": {"en": "Active", "zh": "活跃"},
+    "afraid": {"en": "Afraid", "zh": "恐惧"},
 }
 
 PANAS_POSITIVE_ITEMS = [
@@ -111,91 +128,91 @@ PANAS_NEGATIVE_ITEMS = [
 PANAS_ITEM_KEYS = list(PANAS_ITEM_LABELS.keys())
 
 SUS_ITEMS = [
-    ("I think that I would like to use this system frequently", "鎴戞兂鎴戜細缁忓父浣跨敤杩欎釜绯荤粺"),
-    ("I found the system unnecessarily complex", "鎴戝彂鐜拌绯荤粺杩囦簬澶嶆潅"),
-    ("I thought the system was easy to use", "鎴戣涓鸿绯荤粺鏄撲簬浣跨敤"),
-    ("I think that I would need the support of a technical person to use this system", "鎴戣涓烘垜闇€瑕佹妧鏈汉鍛樼殑甯姪鎵嶈兘浣跨敤杩欎釜绯荤粺"),
-    ("I found the various functions in this system were well integrated", "鎴戝彂鐜拌绯荤粺鑳藉寰堝ソ鍦伴泦鎴愪簡鍚勭鍔熻兘"),
-    ("I thought there was too much inconsistency in this system", "鎴戣涓鸿绯荤粺涓瓨鍦ㄥぇ閲忕殑涓嶄竴鑷?),
-    ("I would imagine that most people would learn to use this system very quickly", "鎴戞兂澶у鏁扮敤鎴疯兘寰堝揩瀛︿細浣跨敤璇ョ郴缁?),
-    ("I found the system very cumbersome to use", "鎴戝彂鐜拌绯荤粺浣跨敤璧锋潵寰堥夯鐑?),
-    ("I felt very confident using the system", "鎴戜娇鐢ㄨ绯荤粺鏃讹紝鎰熷埌寰堟湁淇″績"),
-    ("I needed to learn a lot of things before I could get going with this system", "鍦ㄤ娇鐢ㄨ绯荤粺涔嬪墠锛屾垜闇€瑕佸涔犲緢澶氱浉鍏崇煡璇?),
+    ("I think that I would like to use this system frequently", "我想我会经常使用这个系统"),
+    ("I found the system unnecessarily complex", "我发现该系统过于复杂"),
+    ("I thought the system was easy to use", "我认为该系统易于使用"),
+    ("I think that I would need the support of a technical person to use this system", "我认为我需要技术人员的帮助才能使用这个系统"),
+    ("I found the various functions in this system were well integrated", "我发现该系统能够很好地集成了各种功能"),
+    ("I thought there was too much inconsistency in this system", "我认为该系统中存在大量的不一致"),
+    ("I would imagine that most people would learn to use this system very quickly", "我想大多数用户能很快学会使用该系统"),
+    ("I found the system very cumbersome to use", "我发现该系统使用起来很麻烦"),
+    ("I felt very confident using the system", "我使用该系统时，感到很有信心"),
+    ("I needed to learn a lot of things before I could get going with this system", "在使用该系统之前，我需要学习很多相关知识"),
 ]
 
 THERAPY_EXPERIENCE_ITEMS = [
-    ("T1_empathy", "AI therapist made me feel understood and supported", "AI 娌荤枟甯堢殑瀵硅瘽璁╂垜鎰熷埌琚悊瑙ｅ拰鏀寔"),
-    ("T2_music_match", "The selected music matched my emotional state", "绯荤粺閫夋嫨鐨勯煶涔愮鍚堟垜褰撴椂鐨勬儏缁姸鎬?),
-    ("T3_imagery_facilitation", "The music helped me generate meaningful imagery or associations", "闊充箰甯姪鎴戜骇鐢熶簡鏈夋剰涔夌殑鐢婚潰鎴栬仈鎯?),
-    ("T4_interpretation_quality", "The AI's interpretation of my imagery made sense", "AI 瀵规垜鎰忚薄鐨勮В璇绘槸鏈夐亾鐞嗙殑"),
-    ("T5_flow_comfort", "The pace and flow of the therapy felt comfortable", "鏁翠釜娌荤枟杩囩▼鐨勮妭濂忓拰娴佺▼璁╂垜鎰熷埌鑸掗€?),
-    ("T6_reuse_intention", "I would use this system again for relaxation or self-exploration", "鎴戞効鎰忓啀娆′娇鐢ㄨ繖涓郴缁熻繘琛屾斁鏉炬垨鑷垜鎺㈢储"),
+    ("T1_empathy", "AI therapist made me feel understood and supported", "AI 治疗师的对话让我感到被理解和支持"),
+    ("T2_music_match", "The selected music matched my emotional state", "系统选择的音乐符合我当时的情绪状态"),
+    ("T3_imagery_facilitation", "The music helped me generate meaningful imagery or associations", "音乐帮助我产生了有意义的画面或联想"),
+    ("T4_interpretation_quality", "The AI's interpretation of my imagery made sense", "AI 对我意象的解读是有道理的"),
+    ("T5_flow_comfort", "The pace and flow of the therapy felt comfortable", "整个治疗过程的节奏和流程让我感到舒适"),
+    ("T6_reuse_intention", "I would use this system again for relaxation or self-exploration", "我愿意再次使用这个系统进行放松或自我探索"),
 ]
 
 
 def get_ui_texts(is_chinese: bool):
     if is_chinese:
         return {
-            "input_label": "鍒嗕韩鎮ㄧ殑鎯虫硶...",
-            "input_placeholder": "鍦ㄦ杈撳叆鎮ㄧ殑娑堟伅...",
-            "submit": "鍙戦€?,
-            "finish_session": "缁撴潫瀵硅瘽",
-            "sam_title_pre": "### 浼氬墠 SAM 璇勫垎",
-            "sam_title_post": "### 浼氬悗 SAM 璇勫垎",
-            "sam_title_default": "### SAM 璇勫垎",
-            "sam_valence_label": "鎰夋偊搴︼紙Valence锛?,
-            "sam_valence_info": "鎮ㄧ幇鍦ㄦ劅瑙夋槸鏇存剦蹇紝杩樻槸鏇翠笉鎰夊揩锛?,
-            "sam_arousal_label": "鍞ら啋搴︼紙Arousal锛?,
-            "sam_arousal_info": "鎮ㄧ幇鍦ㄦ槸鏇村钩闈欐斁鏉撅紝杩樻槸鏇村叴濂嬬揣寮狅紵",
-            "sam_instruction": "Valence锛堟剦鎮﹀害锛? 1=闈炲父涓嶆剦蹇? 5=涓€? 9=闈炲父鎰夊揩\n\nArousal锛堝敜閱掑害锛? 1=闈炲父骞抽潤, 5=涓瓑, 9=闈炲父鍏村",
-            "sam_submit": "鎻愪氦 SAM",
-            "sam_saved": "SAM 璇勫垎宸蹭繚瀛樸€?,
-            "sam_not_needed": "褰撳墠鏃犻渶璇勫垎銆?,
-            "panas_title_pre": "### 浼氬墠 PANAS 璇勫垎",
-            "panas_title_post": "### 浼氬悗 PANAS 璇勫垎",
-            "panas_title_default": "### PANAS 璇勫垎",
-            "panas_submit": "鎻愪氦 PANAS",
-            "panas_saved": "PANAS 璇勫垎宸蹭繚瀛樸€?,
-            "panas_not_needed": "褰撳墠鏃犻渶 PANAS 璇勫垎銆?,
-            "sus_title": "### SUS 绯荤粺鍙敤鎬ч噺琛?,
-            "sus_title_default": "### SUS 绯荤粺鍙敤鎬ч噺琛?,
-            "sus_submit": "鎻愪氦 SUS",
-            "sus_saved": "SUS 宸蹭繚瀛樸€?,
-            "sus_not_needed": "褰撳墠鏃犻渶 SUS銆?,
-            "therapy_title": "### 娌荤枟浣撻獙涓撻」璇勪及",
-            "therapy_title_default": "### 娌荤枟浣撻獙涓撻」璇勪及",
-            "therapy_submit": "鎻愪氦浣撻獙璇勪及",
-            "therapy_saved": "娌荤枟浣撻獙璇勪及宸蹭繚瀛樸€?,
-            "therapy_not_needed": "褰撳墠鏃犻渶娌荤枟浣撻獙璇勪及銆?,
-            "music_start": "鎴戞鍦ㄤ负鎮ㄥ噯澶囧悎閫傜殑闊充箰锛岃绋嶇瓑鐗囧埢...",
-            "music_processing": "鎴戞鍦ㄥ鐞嗛煶涔愶紝璇风◢绛夌墖鍒汇€?,
-            "music_ready": "闊充箰宸插噯澶囧ソ锛屾偍鍙互寮€濮嬭亞鍚€?,
-            "music_experience": "鎺ヤ笅鏉ヨ鍏堝畨闈欐劅鍙楅煶涔愶紝鎴戜細鍦ㄧ粨鏉熷悗缁х画闄偍銆?,
-            "music_ended": "杩欐闊充箰宸茬粡缁撴潫銆傚厛鎱㈡參鍥炲埌褰撲笅锛屾垜浠啀涓€璧峰洖椤惧垰鎵嶇殑浣撻獙銆?,
-            "post_music_reflection": "娆㈣繋鍥炴潵銆傚厛鎱㈡參鍥炲埌褰撲笅锛屼笉鐫€鎬ラ┈涓婂洖绛斻€俓n鍙互鍏堟敞鎰忎竴涓嬭嚜宸辩殑鍛煎惛銆佽韩浣撶殑鎰熻锛屾垨鑰呮鍒绘渶鏄庢樉鐨勬儏缁€俓n\n褰撴偍鍑嗗濂界殑鏃跺€欙紝鍙互鎱㈡參鍥炴兂涓€涓嬶紝\n鍒氭墠鐨勯煶涔愪綋楠岄噷锛屾湁娌℃湁浠€涔堢敾闈€佹儏缁€佹兂娉曟垨韬綋鎰熻璁╂偍鍗拌薄鐗瑰埆娣卞埢锛?,
-            "closure": "鎴戜滑宸茬粡鎺ヨ繎杩欐鐤楁剤浣撻獙鐨勫熬澹颁簡銆俓n濡傛灉鎮ㄦ効鎰忥紝鎴戜滑鍙互涓€璧风畝鍗曟暣鐞嗕竴涓嬪垰鎵嶇殑浣撻獙锛岀劧鍚庡畬鎴愭渶鍚庣殑璇勪及銆?,
-            "post_session_assessment_intro": "鍦ㄧ粨鏉熶箣鍓嶏紝鎴戜滑浼氬仛涓€涓畝鐭殑鎰熷彈璇勪及锛孿n甯姪鎴戜滑鏇村ソ鍦扮悊瑙ｈ繖娆′綋楠屽鎮ㄧ殑褰卞搷銆俓n璇锋牴鎹偍姝ゅ埢鐨勬劅鍙楄繘琛岄€夋嫨锛屾病鏈夊閿欎箣鍒嗐€?,
-            "play_music": "馃帶 璇蜂娇鐢ㄤ笅鏂规挱鏀惧櫒鑱嗗惉闊充箰銆?,
-            "participant_id_label": "鍙備笌鑰呯紪鍙?,
-            "participant_id_placeholder": "绯荤粺浼氳嚜鍔ㄧ敓鎴愶紱绗簩娆′細璇濇椂鍙矘璐村凡淇濆瓨鐨勭紪鍙?,
-            "start_session": "寮€濮嬪疄楠?,
-            "participant_id_generated": "鍙備笌鑰呯紪鍙峰凡鐢熸垚銆傜 {session_number}/2 娆′細璇濆凡鍑嗗濂姐€傝淇濆瓨姝ょ紪鍙蜂互渚垮畬鎴愮浜屾浼氳瘽銆?,
-            "all_sessions_complete": "鎵€鏈夋寚瀹氫細璇濆潎宸插畬鎴愩€傝阿璋㈡偍銆?,
-            "session_ready": "绗?{session_number}/2 娆′細璇濆凡鍑嗗濂姐€?,
-            "save_participant_id": "璇蜂繚瀛樻偍鐨勫弬涓庤€呯紪鍙凤細\n\n**{participant_id}**\n\n鎮ㄩ渶瑕佷娇鐢ㄥ畠瀹屾垚绗簩娆′細璇濄€?,
-            "washout_continue": "璇峰厛瀹屾垚浼戞伅鍐嶈繘鍏ョ浜屾浼氳瘽銆傚墿浣欐椂闂达細{minutes}:{seconds:02d}銆傛偍鐨勫弬涓庤€呯紪鍙锋槸 {participant_id}銆?,
-            "washout_title": "璇峰湪寮€濮嬬浜屾浼氳瘽鍓嶇煭鏆備紤鎭?5 鍒嗛挓銆?,
-            "washout_id_intro": "鎮ㄧ殑鍙備笌鑰呯紪鍙锋槸锛?,
-            "washout_instruction": "璇蜂繚瀛樻缂栧彿銆傚€掕鏃剁粨鏉熷悗锛岀浜屾浼氳瘽灏嗗彲缁х画銆?,
-            "washout_available_after": "鍙户缁椂闂达細{end_time}",
-            "washout_calculating": "姝ｅ湪璁＄畻鍓╀綑鏃堕棿...",
-            "washout_done": "浼戞伅宸插畬鎴愩€傛偍鍙互鐐瑰嚮鈥滃紑濮嬩細璇濃€濈户缁浜屾浼氳瘽銆?,
-            "washout_remaining": "鍓╀綑浼戞伅鏃堕棿锛?,
-            "washout_complete": "浼戞伅宸插畬鎴愩€?,
-            "audio_label": "闊充箰鎾斁鍣?,
-            "final_complete_title": "璋㈣阿鎮紝鎮ㄥ凡缁忓畬鎴愪袱娆′細璇濄€?,
-            "final_complete_body": "鎮ㄧ殑鍥炵瓟宸蹭繚瀛樸€?,
-            "start_session_2": "寮€濮嬬浜屾浼氳瘽"
+            "input_label": "分享您的想法...",
+            "input_placeholder": "在此输入您的消息...",
+            "submit": "发送",
+            "finish_session": "结束对话",
+            "sam_title_pre": "### 会前 SAM 评分",
+            "sam_title_post": "### 会后 SAM 评分",
+            "sam_title_default": "### SAM 评分",
+            "sam_valence_label": "愉悦度（Valence）",
+            "sam_valence_info": "您现在感觉是更愉快，还是更不愉快？",
+            "sam_arousal_label": "唤醒度（Arousal）",
+            "sam_arousal_info": "您现在是更平静放松，还是更兴奋紧张？",
+            "sam_instruction": "Valence（愉悦度）: 1=非常不愉快, 5=中性, 9=非常愉快\n\nArousal（唤醒度）: 1=非常平静, 5=中等, 9=非常兴奋",
+            "sam_submit": "提交 SAM",
+            "sam_saved": "SAM 评分已保存。",
+            "sam_not_needed": "当前无需评分。",
+            "panas_title_pre": "### 会前 PANAS 评分",
+            "panas_title_post": "### 会后 PANAS 评分",
+            "panas_title_default": "### PANAS 评分",
+            "panas_submit": "提交 PANAS",
+            "panas_saved": "PANAS 评分已保存。",
+            "panas_not_needed": "当前无需 PANAS 评分。",
+            "sus_title": "### SUS 系统可用性量表",
+            "sus_title_default": "### SUS 系统可用性量表",
+            "sus_submit": "提交 SUS",
+            "sus_saved": "SUS 已保存。",
+            "sus_not_needed": "当前无需 SUS。",
+            "therapy_title": "### 治疗体验专项评估",
+            "therapy_title_default": "### 治疗体验专项评估",
+            "therapy_submit": "提交体验评估",
+            "therapy_saved": "治疗体验评估已保存。",
+            "therapy_not_needed": "当前无需治疗体验评估。",
+            "music_start": "我正在为您准备合适的音乐，请稍等片刻...",
+            "music_processing": "我正在处理音乐，请稍等片刻。",
+            "music_ready": "音乐已准备好，您可以开始聆听。",
+            "music_experience": "接下来请先安静感受音乐，我会在结束后继续陪您。",
+            "music_ended": "这段音乐已经结束。先慢慢回到当下，我们再一起回顾刚才的体验。",
+            "post_music_reflection": "欢迎回来。先慢慢回到当下，不着急马上回答。\n可以先注意一下自己的呼吸、身体的感觉，或者此刻最明显的情绪。\n\n当您准备好的时候，可以慢慢回想一下，\n刚才的音乐体验里，有没有什么画面、情绪、想法或身体感觉让您印象特别深刻？",
+            "closure": "我们已经接近这段疗愈体验的尾声了。\n如果您愿意，我们可以一起简单整理一下刚才的体验，然后完成最后的评估。",
+            "post_session_assessment_intro": "在结束之前，我们会做一个简短的感受评估，\n帮助我们更好地理解这次体验对您的影响。\n请根据您此刻的感受进行选择，没有对错之分。",
+            "play_music": "🎧 请使用下方播放器聆听音乐。",
+            "participant_id_label": "参与者编号",
+            "participant_id_placeholder": "系统会自动生成；第二次会话时可粘贴已保存的编号",
+            "start_session": "开始实验",
+            "participant_id_generated": "参与者编号已生成。第 {session_number}/2 次会话已准备好。请保存此编号以便完成第二次会话。",
+            "all_sessions_complete": "所有指定会话均已完成。谢谢您。",
+            "session_ready": "第 {session_number}/2 次会话已准备好。",
+            "save_participant_id": "请保存您的参与者编号：\n\n**{participant_id}**\n\n您需要使用它完成第二次会话。",
+            "washout_continue": "请先完成休息再进入第二次会话。剩余时间：{minutes}:{seconds:02d}。您的参与者编号是 {participant_id}。",
+            "washout_title": "请在开始第二次会话前短暂休息 5 分钟。",
+            "washout_id_intro": "您的参与者编号是：",
+            "washout_instruction": "请保存此编号。倒计时结束后，第二次会话将可继续。",
+            "washout_available_after": "可继续时间：{end_time}",
+            "washout_calculating": "正在计算剩余时间...",
+            "washout_done": "休息已完成。您可以点击“开始会话”继续第二次会话。",
+            "washout_remaining": "剩余休息时间：",
+            "washout_complete": "休息已完成。",
+            "audio_label": "音乐播放器",
+            "final_complete_title": "谢谢您，您已经完成两次会话。",
+            "final_complete_body": "您的回答已保存。",
+            "start_session_2": "开始第二次会话"
         }
     return {
         "input_label": "Share your thoughts...",
@@ -237,7 +254,7 @@ def get_ui_texts(is_chinese: bool):
         "post_music_reflection": "Welcome back. Take your time returning to the present moment.\nYou do not need to answer immediately. You can first notice your breath, your body, or the most noticeable feeling right now.\n\nWhen you feel ready, you can gently reflect on the music experience.\nWas there any image, emotion, thought, or bodily sensation that stood out to you?",
         "closure": "We are approaching the end of this therapeutic experience.\nIf you would like, we can briefly reflect on what you experienced and then complete the final assessment.",
         "post_session_assessment_intro": "Before we finish, we will do a brief assessment\nto better understand how this experience has affected you.\nPlease respond based on how you feel right now.\nThere are no right or wrong answers.",
-        "play_music": "馃帶 Please use the player below to listen to the music.",
+        "play_music": "🎧 Please use the player below to listen to the music.",
         "participant_id_label": "Participant ID",
         "participant_id_placeholder": "Generated automatically, or paste saved ID for Session 2",
         "start_session": "Start Experiment",
@@ -324,7 +341,8 @@ class GIMTherapySession:
         self.initialize_welcome_message()
         print(f"[startup] initialize_welcome_message completed in {time.time() - welcome_started_at:.3f}s")
         self.api_key = os.getenv("OPENAI_API_KEY", "")
-        # 鍙互閫氳繃鐜鍙橀噺鎺у埗鏄惁閲嶅缓绱?        music_db_started_at = time.time()
+        # 可以通过环境变量控制是否重建索
+        music_db_started_at = time.time()
         print(f"[startup] MusicDatabase construction start use_elasticsearch={not startup_light}")
         self.music_db = MusicDatabase("../toy_dataset/music_data_complete_with_valence_arousal.json", use_elasticsearch=not startup_light, rebuild_index=True) if not startup_light else None
         if startup_light:
@@ -344,23 +362,25 @@ class GIMTherapySession:
         self.summarization_threshold = SUMMARIZATION_THRESHOLD
         self.selected_music_tracks = []  # Store selected music tracks
         
-        # 鍒濆鍖栬繘搴︽樉绀虹浉鍏冲睘鎬?        self.progress_status = ""  # 杩涘害鐘舵€佹枃鏈?        self.phase_info = ""      # 闃舵淇℃伅
-        self.music_info = ""      # 闊充箰澶勭悊淇℃伅
+        # 初始化进度显示相关属性
+        self.progress_status = ""  # 进度状态文本
+        self.phase_info = ""      # 阶段信息
+        self.music_info = ""      # 音乐处理信息
         
-        # 鏂板锛氬垵濮嬪寲GIM闊抽缂栬緫浠ｇ悊
+        # 新增：初始化GIM音频编辑代理
         audio_agent_started_at = time.time()
         print("[startup] GIMAudioAgent construction start")
         self.audio_agent = GIMAudioAgent(
             music_db=self.music_db,
             api_key=self.api_key,
-            music_root="../toy_dataset/mp3",  ##todo锛氬叏鍙usic root鍜宱utput dir
+            music_root="../toy_dataset/mp3",  ##todo：全句music root和output dir
             output_dir="output"
         ) if not startup_light else None
         if startup_light:
             print("[startup] GIMAudioAgent deferred (lazy)")
         else:
             print(f"[startup] GIMAudioAgent construction completed in {time.time() - audio_agent_started_at:.3f}s")
-        self.gim_program_result = None  # 瀛樺偍鏈€缁堢殑Program鍚堟垚缁撴灉
+        self.gim_program_result = None  # 存储最终的Program合成结果
         self.kimusic_render_result = None
         self.baseline_used_track_ids = set()
         self.ablation_logged = False
@@ -535,7 +555,7 @@ class GIMTherapySession:
             }
         ]
 
-        conn = http.client.HTTPSConnection("api.openai.com")
+        conn, api_path = make_llm_connection()
         payload = json.dumps({
             "model": MODEL_NAME,
             "max_tokens": 120,
@@ -548,7 +568,7 @@ class GIMTherapySession:
         }
 
         try:
-            conn.request("POST", "/v1/chat/completions", payload, headers)
+            conn.request("POST", api_path, payload, headers)
             response = conn.getresponse()
             response_data = json.loads(response.read().decode("utf-8"))
 
@@ -618,17 +638,17 @@ class GIMTherapySession:
         normalized = text.lower()
         continuation_markers = [
             "?",
-            "锛?,
-            "浠€涔堟劅瑙?,
-            "鏈変粈涔堝彉鍖?,
+            "？",
+            "什么感觉",
+            "有什么变化",
+            "你注意到",
+            "你愿意",
+            "你可以慢慢感受",
+            "浠€涔堟劅瑙",
+            "鏈変粈涔堝彉鍖",
             "浣犳敞鎰忓埌",
-            "浣犳効鎰?,
-            "浣犲彲浠ユ參鎱㈡劅鍙?,
-            "娴犫偓娑斿牊鍔呯憴",
-            "閺堝绮堟稊鍫濆綁閸?,
-            "娴ｇ姵鏁為幇蹇撳煂",
-            "娴ｇ姵鍔归幇",
-            "娴ｇ姴褰叉禒銉﹀弮閹便垺鍔呴崣",
+            "浣犳効鎰",
+            "浣犲彲浠ユ參鎱㈡劅鍙",
             "what do you notice",
             "how does it feel",
             "what happens",
@@ -702,15 +722,20 @@ class GIMTherapySession:
         welcome_message_en = """Hello! I'm your GIM (Guided Imagery and Music) therapy assistant. I'm here to guide you through a therapeutic journey combining music and imagery. 
 
 I specialize in:
-鈥?Creating a safe and supportive environment for emotional exploration
-鈥?Using music to facilitate deep personal insights
-鈥?Guiding you through different phases of the GIM experience
+• Creating a safe and supportive environment for emotional exploration
+• Using music to facilitate deep personal insights
+• Guiding you through different phases of the GIM experience
 
-Feel free to share whatever comes to your mind. Would you like to introduce yourself and tell me what brings you here today?"""
+Feel free to share whatever comes to your mind. Would you like to intriduce yourself and tell me what brings you here today?"""
 
-        welcome_message_zh = """鎮ㄥソ锛佹垜鏄偍鐨凣IM锛堝紩瀵煎紡闊充箰涓庢剰璞★級娌荤枟鍔╂墜銆傛垜灏嗛櫔浼存偍灞曞紑涓€娈电粨鍚堥煶涔愪笌鎰忚薄鐨勬不鐤椾箣鏃呫€?
-鎴戠殑涓撻暱鍖呮嫭锛?鈥?鍒涢€犲畨鍏ㄥ拰鏀寔鐨勬儏鎰熸帰绱㈢幆澧?鈥?杩愮敤闊充箰淇冭繘娣卞眰鐨勪釜浜烘礊瀵?鈥?寮曞鎮ㄧ粡鍘咷IM浣撻獙鐨勪笉鍚岄樁娈?
-璇烽殢鎰忓垎浜换浣曟兂娉曘€傛偍鎰挎剰鍏堜粙缁嶄竴涓嬭嚜宸卞苟涓斿憡璇夋垜鏄粈涔堝師鍥犺鎮ㄦ潵鍒拌繖閲屽悧锛?""
+        welcome_message_zh = """您好！我是您的GIM（引导式音乐与意象）治疗助手。我将陪伴您展开一段结合音乐与意象的治疗之旅。
+
+我的专长包括：
+• 创造安全和支持的情感探索环境
+• 运用音乐促进深层的个人洞察
+• 引导您经历GIM体验的不同阶段
+
+请随意分享任何想法。您愿意先介绍一下自己并且告诉我是什么原因让您来到这里吗？"""
 
         welcome_message = welcome_message_zh if is_session_chinese(self) else welcome_message_en
         self.append_chat_message("assistant", welcome_message, phase=GIMState.PRELUDE)
@@ -855,7 +880,7 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             stripped_content = content.strip()
             if not stripped_content:
                 continue
-            if stripped_content.startswith("API璇锋眰澶辫触"):
+            if stripped_content.startswith("API请求失败"):
                 continue
 
             cleaned_messages.append({
@@ -883,7 +908,7 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
         This is called when transitioning to the music_imaging phase.
         """
         
-        # 鑾峰彇鐒︾偣
+        # 获取焦点
         self.ensure_memory_manager()
         self.ensure_music_db()
         if not self.focus_intention:
@@ -892,7 +917,7 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
                 self.focus_intention = self.memory.memories["focus_intentions"][-1]["focus"]
             else:
                 self.focus_intention = "exploring inner experiences"
-        # 鑾峰彇鎯呯华
+        # 获取情绪
         if not self.user_mood:
             if self.memory.memories["emotional_states"]:
                 emotions = [state["emotion"] for state in self.memory.memories["emotional_states"][-3:]]
@@ -924,7 +949,7 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
         # Get mood and genre options
         mood_options = ", ".join(self.music_db.get_attribute_options("mood", MOOD_OPTIONS_NUM))
         genre_options = ", ".join(self.music_db.get_attribute_options("genre", GENRE_OPTIONS_NUM))
-        # 鐢熸垚prompt
+        # 生成prompt
         system_prompt = get_music_system_prompt(mood_options, genre_options)
         user_prompt = get_music_user_prompt(
             therapy_state=self.current_state,
@@ -935,15 +960,15 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
         return system_prompt, user_prompt
 
     def classify_state(self, user_message):
-        """绗竴姝ワ細鐘舵€佸垎绫?- 浠呰繑鍥炵姸鎬佹爣绛撅紝涓嶇敓鎴愭鏂囧唴瀹?""
-        # 浣跨敤prompts涓柊澧炵殑鍙岃鍒嗙被绯荤粺鎻愮ず锛屽熀浜庡綋鍓嶈瑷€鍔ㄦ€侀€夋嫨
+        """第一步：状态分类 - 仅返回状态标签，不生成正文内容"""
+        # 使用prompts中新增的双语分类系统提示，基于当前语言动态选择
         classification_system_prompt = (
             prompts.STATE_CLASSIFICATION_SYSTEM_PROMPT_ZH
             if getattr(prompts, "LANGUAGE", "en") == "zh"
             else prompts.STATE_CLASSIFICATION_SYSTEM_PROMPT_EN
         )
 
-        # 鍑嗗鍒嗙被鐢ㄧ殑娑堟伅
+        # 准备分类用的消息
         classification_messages = [
             {
                 "role": "system",
@@ -951,7 +976,7 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             }
         ]
         
-        # 娣诲姞褰撳墠鐘舵€佷綔涓轰笂涓嬫枃
+        # 添加当前状态作为上下文
         classification_messages.append({
             "role": "user", 
             "content": f"Current state: {self.current_state}\n\nConversation history: {self.chat_history[-5:] if len(self.chat_history) >= 5 else self.chat_history}\n\nUser's latest input: {user_message}"
@@ -963,88 +988,101 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             "system"
         )
         
-        # 鍙戦€佸垎绫昏姹?        conn = http.client.HTTPSConnection("api.openai.com")
+        # 发送分类请求
+        conn, api_path = make_llm_connection()
         payload = json.dumps({
             "model": MODEL_NAME,
-            "max_tokens": 32,  # 鏋佽交閲?            "temperature": 0.1,  # 浣庢俯搴︾‘淇濈ǔ瀹?            "messages": classification_messages
+            "max_tokens": 32,  # 极轻量
+            "temperature": 0.1,  # 低温度确保稳定
+            "messages": classification_messages
         })
         headers = {
             'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'
         }
         
-        # 鍙戦€丄PI璇锋眰
-        conn.request("POST", "/v1/chat/completions", payload, headers)
+        # 发送API请求
+        conn.request("POST", api_path, payload, headers)
         response = conn.getresponse()
         
         try:
             response_data = json.loads(response.read().decode("utf-8"))
             
-            # 鎻愬彇鍒嗙被缁撴灉
+            # 提取分类结果
             if isinstance(response_data, dict) and 'choices' in response_data:
                 classification_text = response_data['choices'][0]['message']['content']
                 
-                # 鎻愬彇鐘舵€?                state_match = re.search(r'<STATE>(.*?)</STATE>', classification_text)
+                # 提取状态
+                state_match = re.search(r'<STATE>(.*?)</STATE>', classification_text)
                 if state_match:
                     predicted_state = state_match.group(1)
-                    print(f"鐘舵€佸垎绫荤粨鏋滐細{predicted_state}")
+                    print(f"状态分类结果：{predicted_state}")
                     return predicted_state
                 else:
-                    print(f"鐘舵€佸垎绫诲け璐ワ紝鏈壘鍒扮姸鎬佹爣绛撅細{classification_text}")
-                    return self.current_state  # 淇濇寔褰撳墠鐘舵€?            else:
-                print(f"鐘舵€佸垎绫籄PI鍝嶅簲鏍煎紡寮傚父锛歿response_data}")
+                    print(f"状态分类失败，未找到状态标签：{classification_text}")
+                    return self.current_state  # 保持当前状态
+            else:
+                print(f"状态分类API响应格式异常：{response_data}")
                 return self.current_state
                 
         except Exception as e:
-            print(f"鐘舵€佸垎绫昏繃绋嬩腑鍙戠敓閿欒锛歿e}")
+            print(f"状态分类过程中发生错误：{e}")
             return self.current_state
 
     # def get_next_response(self, user_message):
-    #     """鑾峰彇涓嬩竴涓搷搴?- 浣跨敤涓ゆ娴佹按绾匡細鍏堝垽瀹氱姸鎬侊紝鍐嶇敓鎴愬唴瀹?""
+    #     """获取下一个响应 - 使用两步流水线：先判定状态，再生成内容"""
     #     global SHOULD_UPDATE_MUSIC_UI
         
-    #     # 淇濆瓨鏃х姸鎬?    #     old_state = self.current_state
+    #     # 保存旧状态
+    #     old_state = self.current_state
         
-    #     # 绗竴姝ワ細鐘舵€佸垎绫?    #     print("classify state...")
+    #     # 第一步：状态分类
+    #     print("classify state...")
     #     predicted_state = self.classify_state(user_message)
         
-    #     # 鏇存柊鐘舵€?    #     self.current_state = predicted_state
+    #     # 更新状态
+    #     self.current_state = predicted_state
     #     print("current state: ", self.current_state)
-    #     # 澶勭悊鐘舵€佸彉鍖?    #     if old_state != predicted_state:
-    #         print(f"鐘舵€佷粠 {old_state} 鍙樹负 {predicted_state}")
+    #     # 处理状态变化
+    #     if old_state != predicted_state:
+    #         print(f"状态从 {old_state} 变为 {predicted_state}")
             
-    #         # 濡傛灉鐘舵€佷粠闈為煶涔愭垚鍍忓彉涓洪煶涔愭垚鍍忥紝璁剧疆鏍囧織骞堕€夋嫨闊充箰
+    #         # 如果状态从非音乐成像变为音乐成像，设置标志并选择音乐
     #         if old_state != GIMState.MUSIC_IMAGING and predicted_state == GIMState.MUSIC_IMAGING:
-    #             print("鐘舵€佸彉涓洪煶涔愭垚鍍忥紝璁剧疆UI鏇存柊鏍囧織骞堕€夋嫨闊充箰")
+    #             print("状态变为音乐成像，设置UI更新标志并选择音乐")
     #             SHOULD_UPDATE_MUSIC_UI = True
-    #             # 绔嬪嵆閫夋嫨闊充箰
+    #             # 立即选择音乐
     #             if not self.music_selected:
     #                 self.select_music_for_imaging()
         
-    #     # 澶勭悊鐢ㄦ埛娑堟伅锛堟洿鏂拌蹇嗭級
+    #     # 处理用户消息（更新记忆）
     #     self.process_user_message(user_message)
         
-    #     # 绗簩姝ワ細鍐呭鐢熸垚 - 浣跨敤鏂扮姸鎬佺殑system prompt
+    #     # 第二步：内容生成 - 使用新状态的system prompt
     #     response = self.get_ai_response()
         
-    #     # 浠庡搷搴斾腑鎻愬彇鐘舵€佽繘琛屼竴鑷存€ф牎楠?    #     extracted_state = self.extract_state_from_response(response)
+    #     # 从响应中提取状态进行一致性校验
+    #     extracted_state = self.extract_state_from_response(response)
     #     if extracted_state != predicted_state:
-    #         print(f"璀﹀憡锛氱敓鎴愬唴瀹逛腑鐨勭姸鎬?{extracted_state})涓庡垎绫荤粨鏋?{predicted_state})涓嶄竴鑷?)
-    #         # 鍙互閫夋嫨鏇存柊鐘舵€佹垨淇濇寔鍒嗙被缁撴灉
+    #         print(f"警告：生成内容中的状态({extracted_state})与分类结果({predicted_state})不一致")
+    #         # 可以选择更新状态或保持分类结果
     #         # self.current_state = extracted_state
         
-    #     # 杩斿洖鏈€缁堝鐞嗗悗鐨勫搷搴?    #     return self.last_assistant_message
+    #     # 返回最终处理后的响应
+    #     return self.last_assistant_message
     
     def get_next_response_stream(self, user_message):
-        """鑾峰彇涓嬩竴涓狝I娴佸紡鍝嶅簲"""
-        # 淇濆瓨鏃х姸鎬?        old_state = self.current_state
+        """获取下一个AI流式响应"""
+        # 保存旧状态
+        old_state = self.current_state
 
-        # 绗竴姝ワ細鐘舵€佸垎绫?        print("classify state...")
+        # 第一步：状态分类
+        print("classify state...")
         predicted_state = self.classify_state(user_message)
         if old_state == GIMState.PRELUDE and not self.has_llm_estimated_va():
             self.extract_va_from_prelude(user_message)
 
-        # 璁板綍褰撳墠 phase 鐨勭敤鎴疯疆鏁帮細杩欐槸 hard cap锛屽彧闄愬埗鏈€澶ц疆娆★紝涓嶉樆姝?LLM 鎻愬墠杩涘叆涓嬩竴闃舵
+        # 记录当前 phase 的用户轮数：这是 hard cap，只限制最大轮次，不阻止 LLM 提前进入下一阶段
         if not hasattr(self, "phase_user_turns"):
             self.phase_user_turns = {
                 GIMState.PRELUDE: 0,
@@ -1055,7 +1093,7 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
 
         self.phase_user_turns[old_state] = self.phase_user_turns.get(old_state, 0) + 1
 
-        # 鏈€澶ц疆鏁颁繚闄╋細濡傛灉 LLM 涓€鐩村仠鐣欏湪 music_imaging锛岀 4 涓敤鎴峰洖澶嶅悗寮哄埗杩涘叆 postlude
+        # 最大轮数保险：如果 LLM 一直停留在 music_imaging，第 4 个用户回复后强制进入 postlude
         music_imaging_turns = self.phase_user_turns.get(GIMState.MUSIC_IMAGING, 0)
         if old_state == GIMState.MUSIC_IMAGING and music_imaging_turns < MUSIC_IMAGING_MIN_USER_TURNS:
             print("Music imaging minimum exploration not reached; staying in music_imaging.")
@@ -1064,64 +1102,70 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             print("Music imaging turn limit reached; forcing transition to postlude.")
             predicted_state = GIMState.POSTLUDE
         
-        # 鏇存柊鐘舵€?        self.current_state = predicted_state
+        # 更新状态
+        self.current_state = predicted_state
         print("current state: ", self.current_state)
         
-        # 澶勭悊鐘舵€佸彉鍖?        if old_state != predicted_state:
-            print(f"鐘舵€佷粠 {old_state} 鍙樹负 {predicted_state}")
+        # 处理状态变化
+        if old_state != predicted_state:
+            print(f"状态从 {old_state} 变为 {predicted_state}")
             
-            # 濡傛灉鐘舵€佷粠闈為煶涔愭垚鍍忓彉涓洪煶涔愭垚鍍忥紝璁剧疆鏍囧織锛堜絾鏆備笉绔嬪嵆閫夋嫨闊充箰锛?            if old_state != GIMState.MUSIC_IMAGING and predicted_state == GIMState.MUSIC_IMAGING:
-                print("鐘舵€佸彉涓洪煶涔愭垚鍍忥紝璁剧疆UI鏇存柊鏍囧織")
+            # 如果状态从非音乐成像变为音乐成像，设置标志（但暂不立即选择音乐）
+            if old_state != GIMState.MUSIC_IMAGING and predicted_state == GIMState.MUSIC_IMAGING:
+                print("状态变为音乐成像，设置UI更新标志")
             elif old_state != GIMState.POSTLUDE and predicted_state == GIMState.POSTLUDE:
                 self.postlude_reflection_prompt_index = max(-1, len(self.chat_history) - 2)
         
-        # 澶勭悊鐢ㄦ埛娑堟伅锛堟洿鏂拌蹇嗭級
+        # 处理用户消息（更新记忆）
         print("update memory...")
         start_time = time.time()
         self.process_user_message(user_message)
         end_time = time.time()
         print(f"update memory time: {end_time - start_time} seconds")
         
-        # 绗簩姝ワ細鍐呭鐢熸垚 - 浣跨敤娴佸紡杈撳嚭
+        # 第二步：内容生成 - 使用流式输出
         for chunk in self.get_ai_response_stream():
             yield chunk
         
-        # # 浠庡搷搴斾腑鎻愬彇鐘舵€佽繘琛屼竴鑷存€ф牎楠?        # response_text = self.last_assistant_message
+        # # 从响应中提取状态进行一致性校验
+        # response_text = self.last_assistant_message
         # extracted_state = self.extract_state_from_response(response_text)
         # if extracted_state != predicted_state:
-        #     print(f"璀﹀憡锛氱敓鎴愬唴瀹逛腑鐨勭姸鎬?{extracted_state})涓庡垎绫荤粨鏋?{predicted_state})涓嶄竴鑷?)
+        #     print(f"警告：生成内容中的状态({extracted_state})与分类结果({predicted_state})不一致")
     
     def update_program_progress(self, stage: str, status: str, progress: float, data: Any = None):
-        """鏇存柊Program鏋勫缓杩涘害鏄剧ず
+        """更新Program构建进度显示
         
         Args:
-            stage: 褰撳墠闃舵
-            status: 鐘舵€佷俊鎭?            progress: 杩涘害鍊?(0-100)
-            data: 鐩稿叧鏁版嵁
+            stage: 当前阶段
+            status: 状态信息
+            progress: 进度值 (0-100)
+            data: 相关数据
         """
-        # 鏍规嵁褰撳墠璇█閫夋嫨鏄剧ず鏂囨湰
+        # 根据当前语言选择显示文本
         is_chinese = is_session_chinese(self)
         
-        # 闃舵鍚嶇О鏄犲皠
+        # 阶段名称映射
         stage_names = {
-            "analysis": "鍒嗘瀽" if is_chinese else "Analysis",
-            "design": "璁捐" if is_chinese else "Design",
-            "music_search": "闊充箰妫€绱? if is_chinese else "Music Search",
-            "processing": "闊充箰澶勭悊" if is_chinese else "Music Processing",
-            "synthesis": "闊抽鍚堟垚" if is_chinese else "Audio Synthesis"
+            "analysis": "分析" if is_chinese else "Analysis",
+            "design": "设计" if is_chinese else "Design",
+            "music_search": "音乐检索" if is_chinese else "Music Search",
+            "processing": "音乐处理" if is_chinese else "Music Processing",
+            "synthesis": "音频合成" if is_chinese else "Audio Synthesis"
         }
         
-        # 鏇存柊杩涘害鐘舵€?        progress_text = f"**{stage_names.get(stage, stage)}**: {status} ({progress:.0f}%)"
+        # 更新进度状态
+        progress_text = f"**{stage_names.get(stage, stage)}**: {status} ({progress:.0f}%)"
         self.progress_status = progress_text
         
-        # 鏇存柊闃舵淇℃伅
+        # 更新阶段信息
         if stage == "design" and data:
             if is_chinese:
-                phase_text = "### 娌荤枟闃舵璁捐\n\n"
+                phase_text = "### 治疗阶段设计\n\n"
                 for i, phase in enumerate(data.get("phases", []), 1):
                     phase_text += f"{i}. **{phase['name']}**\n"
-                    phase_text += f"   - 鏃堕暱: {phase['duration']}绉抃n"
-                    phase_text += f"   - 鐩殑: {phase['purpose']}\n\n"
+                    phase_text += f"   - 时长: {phase['duration']}秒\n"
+                    phase_text += f"   - 目的: {phase['purpose']}\n\n"
             else:
                 phase_text = "### Therapy Phases Design\n\n"
                 for i, phase in enumerate(data.get("phases", []), 1):
@@ -1131,19 +1175,19 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             
             self.phase_info = phase_text
         
-        # 鏇存柊闊充箰澶勭悊淇℃伅
+        # 更新音乐处理信息
         if stage == "processing" and data:
             if is_chinese:
-                music_text = "### 闊充箰澶勭悊缁撴灉\n\n"
+                music_text = "### 音乐处理结果\n\n"
                 for i, seg in enumerate(data.get("segments", []), 1):
                     music_text += f"{i}. **{seg['title']}**\n"
-                    music_text += f"   - 鏃堕暱: {seg['duration']}绉抃n"
-                    music_text += f"   - 澶勭悊鍙傛暟:\n"
-                    music_text += f"     - 閫熷害: {seg['processing']['speed']}x\n"
-                    music_text += f"     - 闊宠皟: {seg['processing']['pitch']} 鍗婇煶\n"
-                    music_text += f"     - 闊抽噺: {seg['processing']['volume']}x\n"
-                    music_text += f"     - 娣″叆: {seg['processing']['fade_in']}ms\n"
-                    music_text += f"     - 娣″嚭: {seg['processing']['fade_out']}ms\n\n"
+                    music_text += f"   - 时长: {seg['duration']}秒\n"
+                    music_text += f"   - 处理参数:\n"
+                    music_text += f"     - 速度: {seg['processing']['speed']}x\n"
+                    music_text += f"     - 音调: {seg['processing']['pitch']} 半音\n"
+                    music_text += f"     - 音量: {seg['processing']['volume']}x\n"
+                    music_text += f"     - 淡入: {seg['processing']['fade_in']}ms\n"
+                    music_text += f"     - 淡出: {seg['processing']['fade_out']}ms\n\n"
             else:
                 music_text = "### Music Processing Results\n\n"
                 for i, seg in enumerate(data.get("segments", []), 1):
@@ -1159,8 +1203,8 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             self.music_info = music_text
 
     def select_music_for_imaging(self, progress_callback=None):
-        """浣跨敤GIM闊抽缂栬緫浠ｇ悊鏋勫缓鍜屾覆鏌撻煶涔怭rogram"""
-        # 濡傛灉宸茬粡閫夋嫨杩囬煶涔愶紝鍒欎笉鍐嶉噸澶嶉€夋嫨
+        """使用GIM音频编辑代理构建和渲染音乐Program"""
+        # 如果已经选择过音乐，则不再重复选择
         if self.music_selected:
             print("Music already selected for this session, skipping selection")
             return
@@ -1192,23 +1236,24 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
 
         self.ensure_audio_agent()
             
-        print("寮€濮嬩娇鐢℅IM闊抽缂栬緫浠ｇ悊鏋勫缓闊充箰Program...")
+        print("开始使用GIM音频编辑代理构建音乐Program...")
         
         try:
-            # 浣跨敤浼犲叆鐨勮繘搴﹀洖璋冩垨榛樿鐨勮繘搴﹀洖璋?            callback = progress_callback or self.update_program_progress
-            # 浣跨敤GIM闊抽缂栬緫浠ｇ悊浠庡璇濆巻鍙叉瀯寤哄拰娓叉煋Program
+            # 使用传入的进度回调或默认的进度回调
+            callback = progress_callback or self.update_program_progress
+            # 使用GIM音频编辑代理从对话历史构建和渲染Program
             self.gim_program_result = self.audio_agent.build_and_render_program(
                 self.chat_history,
                 progress_callback=callback
             )
             
-            print("GIM Program鏋勫缓瀹屾垚锛?)
-            print(f"鍒嗘瀽缁撴灉: {self.gim_program_result['analysis']}")
-            print(f"Program闃舵鏁? {len(self.gim_program_result['program'])}")
-            print(f"杈撳嚭鏂囦欢: {self.gim_program_result['output']['file']}")
+            print("GIM Program构建完成！")
+            print(f"分析结果: {self.gim_program_result['analysis']}")
+            print(f"Program阶段数: {len(self.gim_program_result['program'])}")
+            print(f"输出文件: {self.gim_program_result['output']['file']}")
             
-            # 涓轰簡鍏煎鐜版湁UI绯荤粺锛屽皢鍚堟垚鐨勯煶棰戜綔涓?selected_music_tracks"
-            # 杩欐牱UI鍙互灞曠ず鏈€缁堢殑Program娣烽煶
+            # 为了兼容现有UI系统，将合成的音频作为"selected_music_tracks"
+            # 这样UI可以展示最终的Program混音
             output_file = self.gim_program_result['output']['file']
             if self.condition == "kimusic":
                 prepare_session_metadata(self.session_data, n_tracks=max(4, NUM_MUSIC_TRACKS))
@@ -1232,43 +1277,44 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
                 self.selected_music_tracks = [{
                     'filename': os.path.basename(output_file),
                     'title': 'GIM Program Mix - Complete Therapy Session',
-                    'full_path': output_file,  # 淇濆瓨瀹屾暣璺緞
+                    'full_path': output_file,  # 保存完整路径
                     'duration_seconds': self.gim_program_result['output']['total_seconds']
                 }]
             self.append_music_tracks_to_session_data()
             
             self.music_selected = True
-            print(f"GIM Program闊抽鍚堟垚瀹屾垚 - 杈撳嚭鏂囦欢: {output_file}")
+            print(f"GIM Program音频合成完成 - 输出文件: {output_file}")
             
         except Exception as e:
-            print(f"GIM Program鏋勫缓澶辫触: {e}")
+            print(f"GIM Program构建失败: {e}")
             import traceback
             traceback.print_exc()
             self.music_selected = False
             return
 
-            # 濡傛灉GIM浠ｇ悊澶辫触锛屽洖閫€鍒板師濮嬬殑闊充箰閫夋嫨鏂规硶
-            print("鍥為€€鍒板師濮嬮煶涔愰€夋嫨鏂规硶...")
+            # 如果GIM代理失败，回退到原始的音乐选择方法
+            print("回退到原始音乐选择方法...")
             system_prompt, user_prompt = self.get_music_recommendation_prompts()
             criteria = self.music_db.get_music_criteria_json(system_prompt, user_prompt, self.api_key)
             self.selected_music_tracks = self.music_db.retrieve_music_for_therapy(criteria, num_tracks=NUM_MUSIC_TRACKS)
             self.append_music_tracks_to_session_data()
             self.music_selected = True
-            print(f"鍥為€€闊充箰閫夋嫨瀹屾垚 - {len(self.selected_music_tracks)} tracks selected")
+            print(f"回退音乐选择完成 - {len(self.selected_music_tracks)} tracks selected")
 
     def process_user_message(self, user_message):
-        """澶勭悊鐢ㄦ埛娑堟伅锛屾洿鏂拌蹇?""
+        """处理用户消息，更新记忆"""
         self.ensure_memory_manager()
         if self.last_assistant_message:
             self.memory.process_message(user_message, self.last_assistant_message, api_key=self.api_key)
         else:
             self.memory.process_message(user_message, api_key=self.api_key)
         
-        # 鏇存柊鑱婂ぉ鍘嗗彶
-        # self.chat_history.append({"role": "user", "content": user_message}) # 鍒犻櫎杩欒閲嶅鐨勫巻鍙茶褰曟坊鍔?            
+        # 更新聊天历史
+        # self.chat_history.append({"role": "user", "content": user_message}) # 删除这行重复的历史记录添加
+            
     def get_ai_response(self):
-        """鑾峰彇AI鍝嶅簲 - 涓嶅啀闇€瑕佺敓鎴愮姸鎬佹爣绛撅紝鍥犱负鐘舵€佸垎绫诲凡鐙珛瀹屾垚"""
-        # 鍒涘缓瀵硅瘽娑堟伅
+        """获取AI响应 - 不再需要生成状态标签，因为状态分类已独立完成"""
+        # 创建对话消息
         messages = [
             {
                 "role": "system",
@@ -1276,28 +1322,29 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             }
         ]
         
-        # 妫€鏌ユ槸鍚﹂渶瑕佹€荤粨瀵硅瘽
+        # 检查是否需要总结对话
         self.ensure_memory_manager()
         if len(self.chat_history) >= self.summarization_threshold:
             print("!!!!!Conversation needs summarization!!!!!!!!!********")
             summary = self.memory.summarize_conversation(self.chat_history, api_key=self.api_key)
             if summary:
                 print(f"Conversation summarized: {len(self.chat_history)} messages processed")
-                # 濡傛灉瀵硅瘽寰堥暱锛屽彲浠ラ€夋嫨鎴柇鑱婂ぉ鍘嗗彶浠ヨ妭鐪丄PI璋冪敤涓殑浠ょ墝
-                if len(self.chat_history) > 30:  # 濡傛灉瀵硅瘽寰堥暱
-                    # 淇濈暀鍓嶅嚑鏉℃秷鎭綔涓轰笂涓嬫枃鍜屾渶杩戠殑娑堟伅
+                # 如果对话很长，可以选择截断聊天历史以节省API调用中的令牌
+                if len(self.chat_history) > 30:  # 如果对话很长
+                    # 保留前几条消息作为上下文和最近的消息
                     self.chat_history = self.chat_history[:5] + self.chat_history[-15:]
                     print(f"Chat history truncated to {len(self.chat_history)} messages")
         
-        # 娣诲姞娓呮礂鍚庣殑鑱婂ぉ鍘嗗彶浣滀负涓婁笅鏂?        for msg in self.get_clean_chat_history_for_model():
+        # 添加清洗后的聊天历史作为上下文
+        for msg in self.get_clean_chat_history_for_model():
             messages.append(msg)
 
         print("!!!!!Cleaned messages before LLM call:")
         print(messages)
         print("########################################################")
         
-        # 鍑嗗API璇锋眰
-        conn = http.client.HTTPSConnection("api.openai.com")
+        # 准备API请求
+        conn, api_path = make_llm_connection()
         payload = json.dumps({
             "model": MODEL_NAME,
             "max_tokens": MAX_TOKENS_RESPONSE,
@@ -1308,26 +1355,27 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             'Content-Type': 'application/json'
         }
         
-        # 鍙戦€丄PI璇锋眰
-        conn.request("POST", "/v1/chat/completions", payload, headers)
+        # 发送API请求
+        conn.request("POST", api_path, payload, headers)
         response = conn.getresponse()
         try:
             response_data = json.loads(response.read().decode("utf-8"))
         except json.decoder.JSONDecodeError as e:
-            print(f"JSON瑙ｆ瀽閿欒: {e}")
-            response_text = "寰堟姳姝夛紝AI杩斿洖鍐呭瑙ｆ瀽澶辫触锛岃绋嶅悗閲嶈瘯銆?
+            print(f"JSON解析错误: {e}")
+            response_text = "很抱歉，AI返回内容解析失败，请稍后重试。"
             self.last_assistant_message = response_text
             return response_text
         except Exception as e:
-            print(f"鑾峰彇AI鍝嶅簲鏃跺彂鐢熸湭鐭ラ敊璇? {e}")
-            response_text = "寰堟姳姝夛紝AI鏈嶅姟鏆傛椂涓嶅彲鐢紝璇风◢鍚庨噸璇曘€?
+            print(f"获取AI响应时发生未知错误: {e}")
+            response_text = "很抱歉，AI服务暂时不可用，请稍后重试。"
             self.last_assistant_message = response_text
             return response_text
         
         print("--------------------------------")
         print(response_data)
         
-        # 浠嶢PI鍝嶅簲涓彁鍙栧搷搴旀枃鏈?        if isinstance(response_data, dict):
+        # 从API响应中提取响应文本
+        if isinstance(response_data, dict):
             if 'choices' in response_data:
                 response_text = response_data['choices'][0]['message']['content']
             elif 'content' in response_data:
@@ -1341,15 +1389,17 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             
         print("Response text:", response_text)
         
-        # 鏆傛椂瀛樺偍鍔╂墜鐨勫搷搴斾互渚涜蹇嗗鐞?        self.last_assistant_message = response_text
+        # 暂时存储助手的响应以供记忆处理
+        self.last_assistant_message = response_text
         
-        # 鏆傛椂鏇存柊鑱婂ぉ鍘嗗彶 - 娉ㄦ剰锛歟xtract_state_from_response鍙兘浼氫慨鏀硅繖涓唴瀹?        self.append_chat_message("assistant", response_text)
+        # 暂时更新聊天历史 - 注意：extract_state_from_response可能会修改这个内容
+        self.append_chat_message("assistant", response_text)
         
         return response_text
 
     def get_ai_response_stream(self):
-        """鑾峰彇AI娴佸紡鍝嶅簲"""
-        # 鍒涘缓瀵硅瘽娑堟伅
+        """获取AI流式响应"""
+        # 创建对话消息
         messages = [
             {
                 "role": "system",
@@ -1357,32 +1407,33 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             }
         ]
         
-        # 妫€鏌ユ槸鍚﹂渶瑕佹€荤粨瀵硅瘽
+        # 检查是否需要总结对话
         self.ensure_memory_manager()
         if len(self.chat_history) >= self.summarization_threshold:
             print("!!!!!Conversation needs summarization!!!!!!!!!********")
             summary = self.memory.summarize_conversation(self.chat_history, api_key=self.api_key)
             if summary:
                 print(f"Conversation summarized: {len(self.chat_history)} messages processed")
-                # 濡傛灉瀵硅瘽寰堥暱锛屽彲浠ラ€夋嫨鎴柇鑱婂ぉ鍘嗗彶浠ヨ妭鐪丄PI璋冪敤涓殑浠ょ墝
-                if len(self.chat_history) > 30:  # 濡傛灉瀵硅瘽寰堥暱
-                    # 淇濈暀鍓嶅嚑鏉℃秷鎭綔涓轰笂涓嬫枃鍜屾渶杩戠殑娑堟伅
+                # 如果对话很长，可以选择截断聊天历史以节省API调用中的令牌
+                if len(self.chat_history) > 30:  # 如果对话很长
+                    # 保留前几条消息作为上下文和最近的消息
                     self.chat_history = self.chat_history[:5] + self.chat_history[-15:]
                     print(f"Chat history truncated to {len(self.chat_history)} messages")
         
-        # 娣诲姞鑱婂ぉ鍘嗗彶浣滀负涓婁笅鏂?        for msg in self.get_clean_chat_history_for_model():
+        # 添加聊天历史作为上下文
+        for msg in self.get_clean_chat_history_for_model():
             messages.append(msg)
 
         print("!!!!!Cleaned messages before LLM call:")
         print(messages)
         print("########################################################")
         
-        # 鍑嗗API璇锋眰 - 浣跨敤娴佸紡杈撳嚭
+        # 准备API请求 - 使用流式输出
         payload = json.dumps({
             "model": MODEL_NAME,
             "max_tokens": MAX_TOKENS_RESPONSE,
             "messages": messages,
-            "stream": True  # 鍚敤娴佸紡杈撳嚭
+            "stream": True  # 启用流式输出
         })
         headers = {
             'Authorization': f'Bearer {self.api_key}',
@@ -1390,10 +1441,10 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
             'Connection': 'close'
         }
         
-        # 鍙戦€佹祦寮廇PI璇锋眰
+        # 发送流式API请求
         try:
-            conn = http.client.HTTPSConnection("api.openai.com", timeout=None)
-            conn.request("POST", "/v1/chat/completions", payload, headers)
+            conn, api_path = make_llm_connection(timeout=None)
+            conn.request("POST", api_path, payload, headers)
             response = conn.getresponse()
             
             if response.status == 200:
@@ -1404,7 +1455,7 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
                 for line in response:
                     line = line.decode('utf-8').strip()
                     if line.startswith('data: '):
-                        data = line[6:]  # 绉婚櫎 'data: ' 鍓嶇紑
+                        data = line[6:]  # 移除 'data: ' 前缀
                         if data == '[DONE]':
                             break
                         try:
@@ -1439,7 +1490,7 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
                 if not token_detected and pending_visible_text:
                     yield pending_visible_text
                 
-                # 淇濆瓨瀹屾暣鍝嶅簲
+                # 保存完整响应
                 cleaned_response = self.strip_session_over_token(full_response)
                 self.last_assistant_message = cleaned_response
                 if cleaned_response.strip():
@@ -1453,12 +1504,12 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
                     self.mark_ready_for_post_session_assessment()
                 
             else:
-                error_text = f"API璇锋眰澶辫触: {response.status}"
+                error_text = f"API请求失败: {response.status}"
                 self.last_assistant_message = error_text
                 yield error_text
                 
         except Exception as e:
-            error_text = f"娴佸紡璇锋眰澶辫触: {str(e)}"
+            error_text = f"流式请求失败: {str(e)}"
             self.last_assistant_message = error_text
             yield error_text
         finally:
@@ -1468,42 +1519,48 @@ Feel free to share whatever comes to your mind. Would you like to introduce your
                 pass
 
     # def extract_state_from_response(self, response_text):
-    #     """浠庡搷搴斾腑鎻愬彇鐘舵€?""
+    #     """从响应中提取状态"""
     #     state_match = re.search(r'<STATE>(.*?)</STATE>', response_text)
     #     if state_match:
     #         new_state = state_match.group(1)
             
-    #         # 浠庡搷搴斾腑鍒犻櫎鐘舵€佹爣绛?    #         clean_response = re.sub(r'<STATE>.*?</STATE>\s*', '', response_text).strip()
+    #         # 从响应中删除状态标签
+    #         clean_response = re.sub(r'<STATE>.*?</STATE>\s*', '', response_text).strip()
             
-    #         # 濡傛灉杩涘叆闊充箰鎴愬儚闃舵涓斿凡閫夋嫨闊充箰锛屾坊鍔犻煶涔愭彁绀轰俊鎭?    #         if new_state == GIMState.MUSIC_IMAGING and self.music_selected and self.selected_music_tracks:
-    #             # 娣诲姞闊充箰鎻愮ず鍒板搷搴斾腑 - 浣跨敤褰撳墠璇█鐨勬彁绀?    #             # 纭繚瀵煎叆鏈€鏂扮殑MUSIC_NOTE鍙橀噺锛屽畠浼氶殢璇█鍒囨崲鑰屽彉鍖?    #             from prompts import MUSIC_NOTE
+    #         # 如果进入音乐成像阶段且已选择音乐，添加音乐提示信息
+    #         if new_state == GIMState.MUSIC_IMAGING and self.music_selected and self.selected_music_tracks:
+    #             # 添加音乐提示到响应中 - 使用当前语言的提示
+    #             # 确保导入最新的MUSIC_NOTE变量，它会随语言切换而变化
+    #             from prompts import MUSIC_NOTE
                 
-    #             # # 濡傛灉鏈塆IM Program缁撴灉锛屾坊鍔犻澶栫殑Program淇℃伅
+    #             # # 如果有GIM Program结果，添加额外的Program信息
     #             # if self.gim_program_result:
-    #             #     program_info = f"\n\n**鎮ㄧ殑GIM闊充箰娌荤枟Program宸插噯澶囧氨缁?*\n"
-    #             #     program_info += f"- 娌荤枟鐩爣: {self.gim_program_result['analysis'].get('therapeutic_goal', '鎯呮劅鎺㈢储')}\n"
-    #             #     program_info += f"- 褰撳墠鎯呯华: {self.gim_program_result['analysis'].get('current_emotion', '寰呮帰绱?)}\n"
-    #             #     program_info += f"- Program闃舵: {len(self.gim_program_result['program'])}涓樁娈礬n"
-    #             #     program_info += f"- 鎬绘椂闀? {self.gim_program_result['output']['total_seconds']}绉抃n"
+    #             #     program_info = f"\n\n**您的GIM音乐治疗Program已准备就绪**\n"
+    #             #     program_info += f"- 治疗目标: {self.gim_program_result['analysis'].get('therapeutic_goal', '情感探索')}\n"
+    #             #     program_info += f"- 当前情绪: {self.gim_program_result['analysis'].get('current_emotion', '待探索')}\n"
+    #             #     program_info += f"- Program阶段: {len(self.gim_program_result['program'])}个阶段\n"
+    #             #     program_info += f"- 总时长: {self.gim_program_result['output']['total_seconds']}秒\n"
     #             #     clean_response += program_info
                 
     #             clean_response += MUSIC_NOTE
                 
-    #             print("宸叉坊鍔犻煶涔愭彁绀轰俊鎭埌鍝嶅簲涓?)
+    #             print("已添加音乐提示信息到响应中")
             
-    #         # 鏇存柊鍝嶅簲鏂囨湰
+    #         # 更新响应文本
     #         self.last_assistant_message = clean_response
             
-    #         # 鏇存柊鑱婂ぉ鍘嗗彶涓殑鏈€鍚庝竴鏉℃秷鎭?    #         if self.chat_history and self.chat_history[-1]["role"] == "assistant":
+    #         # 更新聊天历史中的最后一条消息
+    #         if self.chat_history and self.chat_history[-1]["role"] == "assistant":
     #             self.chat_history[-1]["content"] = clean_response
             
     #         return new_state
         
-    #     # 濡傛灉娌℃湁鎵惧埌鐘舵€佹爣绛撅紝淇濇寔褰撳墠鐘舵€?    #     return self.current_state
+    #     # 如果没有找到状态标签，保持当前状态
+    #     return self.current_state
 
 
 
-# 纭繚杈撳嚭鐩綍瀛樺湪
+# 确保输出目录存在
 os.makedirs("output", exist_ok=True)
 
 def get_music_tracks(session: GIMTherapySession):
@@ -1520,14 +1577,14 @@ def get_music_tracks(session: GIMTherapySession):
                 filename = track["filename"]
                 title = track.get("title", filename)
                 
-                # 棣栧厛妫€鏌ユ槸鍚︽湁full_path锛圙IM Program鍚堟垚鐨勬枃浠讹級
+                # 首先检查是否有full_path（GIM Program合成的文件）
                 if "full_path" in track and os.path.exists(track["full_path"]) and os.path.isfile(track["full_path"]):
                     print(f"Found GIM Program file: {track['full_path']}")
                     music_files.append(track["full_path"])
                     music_titles.append(title)
                     continue
                 
-                # 妫€鏌ョ浉瀵硅矾寰勫拰缁濆璺緞
+                # 检查相对路径和绝对路径
                 if os.path.isabs(filename) and os.path.exists(filename) and os.path.isfile(filename):
                     print(f"Found music file (absolute path): {filename}")
                     music_files.append(filename)
@@ -1539,7 +1596,8 @@ def get_music_tracks(session: GIMTherapySession):
                     
                     if os.path.exists(file_path) and os.path.isfile(file_path):
                         print(f"Found music file: {file_path}")
-                        # 鐩存帴浣跨敤鏂囦欢璺緞锛孏radio浼氬鐞嗘枃浠朵紶杈?                        music_files.append(file_path)
+                        # 直接使用文件路径，Gradio会处理文件传输
+                        music_files.append(file_path)
                         music_titles.append(title)
                     else:
                         print(f"WARNING: Music file not found: {file_path}")
@@ -1562,35 +1620,35 @@ def export_session_results(session: GIMTherapySession):
     return export_path
 
 # def get_gim_program_info():
-#     """鑾峰彇GIM Program鐨勮缁嗕俊鎭敤浜庢樉绀?(鏆傛椂涓嶅睍绀簆rograminfo)"""
+#     """获取GIM Program的详细信息用于显示,(暂时不展示programinfo)"""
 #     if not therapy_session.gim_program_result:
 #         return ""
     
 #     result = therapy_session.gim_program_result
-#     info = "## GIM闊充箰娌荤枟Program璇︽儏\n\n"
+#     info = "## GIM音乐治疗Program详情\n\n"
     
-#     # 鍒嗘瀽缁撴灉
+#     # 分析结果
 #     analysis = result.get('analysis', {})
-#     info += f"**褰撳墠鎯呯华鐘舵€?** {analysis.get('current_emotion', '鏈煡')}\n"
-#     info += f"**鏍稿績涓婚:** {', '.join(analysis.get('key_themes', []))}\n"
-#     info += f"**娌荤枟鐩爣:** {analysis.get('therapeutic_goal', '鏈瀹?)}\n\n"
+#     info += f"**当前情绪状态:** {analysis.get('current_emotion', '未知')}\n"
+#     info += f"**核心主题:** {', '.join(analysis.get('key_themes', []))}\n"
+#     info += f"**治疗目标:** {analysis.get('therapeutic_goal', '未设定')}\n\n"
     
-#     # Program闃舵
-#     info += "**Program闃舵璁捐:**\n"
+#     # Program阶段
+#     info += "**Program阶段设计:**\n"
 #     for i, phase in enumerate(result.get('program', []), 1):
-#         info += f"{i}. **{phase.get('phase', f'闃舵{i}')}** ({phase.get('duration_seconds', 0)}绉?\n"
-#         info += f"   - 鐩殑: {phase.get('purpose', '鏈鏄?)}\n"
+#         info += f"{i}. **{phase.get('phase', f'阶段{i}')}** ({phase.get('duration_seconds', 0)}秒)\n"
+#         info += f"   - 目的: {phase.get('purpose', '未说明')}\n"
 #         criteria = phase.get('search_criteria', {})
 #         if criteria.get('mood_keywords'):
-#             info += f"   - 鎯呯华鍏抽敭璇? {', '.join(criteria.get('mood_keywords', []))}\n"
-#         info += f"   - 鑺傚鍋忓ソ: {criteria.get('tempo_preference', '鏈瀹?)}\n"
-#         info += f"   - 鍔ㄦ€佸亸濂? {criteria.get('dynamics_preference', '鏈瀹?)}\n\n"
+#             info += f"   - 情绪关键词: {', '.join(criteria.get('mood_keywords', []))}\n"
+#         info += f"   - 节奏偏好: {criteria.get('tempo_preference', '未设定')}\n"
+#         info += f"   - 动态偏好: {criteria.get('dynamics_preference', '未设定')}\n\n"
     
-#     # 杈撳嚭淇℃伅
+#     # 输出信息
 #     output_info = result.get('output', {})
-#     info += f"**鍚堟垚缁撴灉:**\n"
-#     info += f"- 杈撳嚭鏂囦欢: {os.path.basename(output_info.get('file', ''))}\n"
-#     info += f"- 鎬绘椂闀? {output_info.get('total_seconds', 0)}绉抃n"
+#     info += f"**合成结果:**\n"
+#     info += f"- 输出文件: {os.path.basename(output_info.get('file', ''))}\n"
+#     info += f"- 总时长: {output_info.get('total_seconds', 0)}秒\n"
     
 #     return info
 
@@ -1614,7 +1672,7 @@ with gr.Blocks(
         const getExitWarning = () => (
             getSelectedLanguage() === "en"
                 ? "The experiment is not complete yet.\\nAre you sure you want to leave?\\nUnsaved data may be lost."
-                : "瀹為獙灏氭湭瀹屾垚锛岀‘瀹氳閫€鍑哄悧锛焅\n鏈畬鎴愮殑鏁版嵁鍙兘鏃犳硶淇濆瓨銆?
+                : "实验尚未完成，确定要退出吗？\\n未完成的数据可能无法保存。"
         );
         const setChatLocked = (locked) => {
             const chatInput = document.querySelector("#gim-chat-input textarea");
@@ -1733,24 +1791,27 @@ with gr.Blocks(
         }
     """
 ) as demo:
-    # 浼氳瘽鐘舵€佺鐞?    session_state = gr.State(None)
+    # 会话状态管理
+    session_state = gr.State(None)
     washout_timer = gr.Timer(1, active=False) if hasattr(gr, "Timer") else None
     
-    # 娣诲姞璇█鍒囨崲
+    # 添加语言切换
     current_language = gr.State(value="en")
     
-    # 鎶藉眽鐘舵€?    left_drawer_visible = gr.State(False)
+    # 抽屉状态
+    left_drawer_visible = gr.State(False)
     right_drawer_visible = gr.State(False)
     
     with gr.Column() as study_entry:
         with gr.Row():
             title_en = gr.Markdown("# Guided Imagery and Music (GIM) Therapy Session")
-            title_zh = gr.Markdown("# 寮曞寮忛煶涔愪笌鎰忚薄 (GIM) 娌荤枟浼氳瘽", visible=False)
+            title_zh = gr.Markdown("# 引导式音乐与意象 (GIM) 治疗会话", visible=False)
         
         with gr.Row():
             intro_en = gr.Markdown("""Welcome to your virtual GIM therapy session. This space is designed to guide you through a therapeutic journey 
         combining music and imagery. Feel free to share your thoughts and feelings openly.""")
-            intro_zh = gr.Markdown("""娆㈣繋鎮ㄥ弬鍔犵殑铏氭嫙GIM娌荤枟浼氳瘽銆傝繖涓┖闂存棬鍦ㄥ紩瀵兼偍閫氳繃缁撳悎闊充箰鍜屾剰璞＄殑娌荤枟鏃呯▼銆?            璇烽殢鎰忓紑鏀惧湴鍒嗕韩鎮ㄧ殑鎯虫硶鍜屾劅鍙椼€?"", visible=False)
+            intro_zh = gr.Markdown("""欢迎您参加的虚拟GIM治疗会话。这个空间旨在引导您通过结合音乐和意象的治疗旅程。
+            请随意开放地分享您的想法和感受。""", visible=False)
 
         study_instructions_en = gr.Markdown("""# Study Instructions
 
@@ -1787,27 +1848,46 @@ Please follow the steps below to complete the experiment:
   - **Start Session 2**
 - There are no right or wrong answers. Please respond according to your genuine thoughts and feelings.
 """)
-        study_instructions_zh = gr.Markdown("""# 瀹為獙璇存槑
+        study_instructions_zh = gr.Markdown("""# 实验说明
 
-娆㈣繋鍙傚姞鏈爺绌讹紒
+欢迎参加本研究！
 
-璇锋寜鐓т互涓嬫楠ゅ畬鎴愬疄楠岋細
+请按照以下步骤完成实验：
 
-1. 璁板綍绯荤粺鑷姩鐢熸垚鐨?Participant ID銆?2. 瀹屾垚鐮旂┒浜哄憳鎻愪緵鐨勮儗鏅棶鍗凤紙濉啓 Participant ID锛夈€?3. 杩斿洖鏈〉闈紝鐐瑰嚮銆愬紑濮嬩細璇濄€戙€?4. 鏍规嵁椤甸潰鎻愮ず瀹屾垚浼氬墠閲忚〃銆佹不鐤楀璇濄€侀煶涔愪綋楠屼互鍙婇煶涔愮粨鏉熷悗鐨勪氦娴佺幆鑺傘€?5. 褰撹亰澶╂満鍣ㄤ汉瀹屾垚鏈浼氳瘽鍚庯紝绯荤粺灏嗚嚜鍔ㄨ繘鍏ヤ細鍚庨噺琛ㄣ€?6. 绗竴杞粨鏉熷悗锛岃鎸夌収绯荤粺鎻愮ず浼戞伅 5 鍒嗛挓銆?7. 鍊掕鏃剁粨鏉熷悗锛岀偣鍑汇€愬紑濮嬬浜屾浼氳瘽銆戝畬鎴愮浜岃疆浣撻獙銆?8. 绗簩杞祦绋嬩笌绗竴杞浉鍚屻€?9. 瀹屾垚鎵€鏈夐噺琛ㄥ悗锛岄〉闈㈡樉绀衡€滃疄楠屽畬鎴愨€濆嵆琛ㄧず瀹為獙缁撴潫銆?
-娉ㄦ剰浜嬮」
+1. 记录系统自动生成的 Participant ID。
+2. 完成研究人员提供的背景问卷（填写 Participant ID）。
+3. 返回本页面，点击【开始会话】。
+4. 根据页面提示完成会前量表、治疗对话、音乐体验以及音乐结束后的交流环节。
+5. 当聊天机器人完成本次会话后，系统将自动进入会后量表。
+6. 第一轮结束后，请按照系统提示休息 5 分钟。
+7. 倒计时结束后，点击【开始第二次会话】完成第二轮体验。
+8. 第二轮流程与第一轮相同。
+9. 完成所有量表后，页面显示“实验完成”即表示实验结束。
 
-- 寤鸿浣╂埓鑰虫満瀹屾垚瀹為獙銆?- 寤鸿浣跨敤鐢佃剳绔紙Chrome 鎴?Edge 娴忚鍣級銆?- 瀹為獙杩囩▼涓淇濇寔缃戠粶绋冲畾锛屼笉瑕佸埛鏂伴〉闈€佸叧闂祻瑙堝櫒鎴栬繑鍥炰笂涓€椤点€?- 璇峰Ε鍠勪繚瀛?Participant ID锛屼互渚垮畬鎴愯儗鏅棶鍗枫€?- 闊充箰鐢熸垚鎴栧姞杞藉彲鑳介渶瑕佸嚑鍗佺锛岃鑰愬績绛夊緟銆傚绛夊緟鏃堕棿杈冮暱锛屽彲鐐瑰嚮銆愮▼搴忋€戞煡鐪嬬敓鎴愯繘搴︺€?- 闊充箰鎾斁缁撴潫鍚庯紝绯荤粺浠嶄細缁х画杩涜涓€娈典氦娴侊紝璇锋牴鎹彁绀虹户缁畬鎴愭暣涓細璇濄€?- 褰撶郴缁熻嚜鍔ㄨ繘鍏ヤ細鍚庨噺琛ㄦ椂锛岃鐩存帴瀹屾垚閲忚〃濉啓锛屾棤闇€鎵嬪姩鐐瑰嚮銆愮粨鏉熷璇濄€戙€?- 闄ゃ€愬紑濮嬩細璇濄€戙€愭彁浜ら噺琛ㄣ€戙€愬彂閫併€戙€愰煶涔愭挱鏀俱€戙€愬紑濮嬬浜屾浼氳瘽銆戝锛屽叾浣欐寜閽竴鑸棤闇€浣跨敤銆?- 鎵€鏈夐棶棰樺潎鏃犳爣鍑嗙瓟妗堬紝璇锋牴鎹嚜宸辩殑鐪熷疄鎰熷彈浣滅瓟銆?""", visible=False)
+注意事项
+
+- 建议佩戴耳机完成实验。
+- 建议使用电脑端（Chrome 或 Edge 浏览器）。
+- 实验过程中请保持网络稳定，不要刷新页面、关闭浏览器或返回上一页。
+- 请妥善保存 Participant ID，以便完成背景问卷。
+- 音乐生成或加载可能需要几十秒，请耐心等待。如等待时间较长，可点击【程序】查看生成进度。
+- 音乐播放结束后，系统仍会继续进行一段交流，请根据提示继续完成整个会话。
+- 当系统自动进入会后量表时，请直接完成量表填写，无需手动点击【结束对话】。
+- 除【开始会话】【提交量表】【发送】【音乐播放】【开始第二次会话】外，其余按钮一般无需使用。
+- 所有问题均无标准答案，请根据自己的真实感受作答。
+""", visible=False)
         
-        # 璇█鍒囨崲寮€鍏?        with gr.Row():
+        # 语言切换开关
+        with gr.Row():
             language_radio = gr.Radio(
-                ["English", "涓枃"], 
-                label="Language / 璇█", 
+                ["English", "中文"], 
+                label="Language / 语言", 
                 value="English",
                 interactive=True
             )
 
         questionnaire_instruction_en = gr.Markdown("Questionnaire: please follow the study questionnaire link provided by the researcher, then click Start Experiment when you are ready.")
-        questionnaire_instruction_zh = gr.Markdown("闂嵎锛氳鎸夌収鐮旂┒鑰呮彁渚涚殑闂嵎閾炬帴瀹屾垚濉啓锛屽噯澶囧ソ鍚庣偣鍑诲紑濮嬪疄楠屻€?, visible=False)
+        questionnaire_instruction_zh = gr.Markdown("问卷：请按照研究者提供的问卷链接完成填写，准备好后点击开始实验。", visible=False)
 
         with gr.Row(elem_id="participant-controls") as participant_controls:
             initial_texts = get_ui_texts(False)
@@ -1823,16 +1903,17 @@ Please follow the steps below to complete the experiment:
     washout_display = gr.HTML("", visible=False)
     final_completion_display = gr.HTML("", visible=False)
     
-    # 鍒涘缓涓夋爮鎶藉眽寮忓竷灞€
+    # 创建三栏抽屉式布局
     with gr.Row(visible=False) as therapy_workspace:
-        # 宸︿晶鎶藉眽 - 鐢ㄦ埛璁板繂
+        # 左侧抽屉 - 用户记忆
         with gr.Column(scale=1, visible=False, elem_classes="left-drawer") as left_drawer:
             with gr.Column(elem_classes="drawer-content"):
-                gr.Markdown("### 馃懁 User Memory / 鐢ㄦ埛璁板繂")
-                user_memory_display = gr.Markdown("Memory content will be displayed here.\n鐢ㄦ埛璁板繂鍐呭灏嗗湪姝ゆ樉绀恒€?)
+                gr.Markdown("### 👤 User Memory / 用户记忆")
+                user_memory_display = gr.Markdown("Memory content will be displayed here.\n用户记忆内容将在此显示。")
         
-        # 涓棿涓诲尯鍩?        with gr.Column(scale=3, elem_classes="main-content") as main_content:
-            # 鍒涘缓鑱婂ぉ鐣岄潰
+        # 中间主区域
+        with gr.Column(scale=3, elem_classes="main-content") as main_content:
+            # 创建聊天界面
             chatbot = gr.Chatbot(
                 height=600,
                 show_label=False,
@@ -1912,7 +1993,7 @@ Please follow the steps below to complete the experiment:
                 therapy_submit_btn = gr.Button("Submit Experience", variant="secondary")
                 therapy_status = gr.Markdown("", visible=False)
              
-            # 缁熶竴鐨勬秷鎭緭鍏ユ
+            # 统一的消息输入框
             msg_input = gr.Textbox(
                 label="Share your thoughts...",
                 placeholder="Type your message here...",
@@ -1920,32 +2001,34 @@ Please follow the steps below to complete the experiment:
                 elem_id="gim-chat-input"
             )
             
-            # 鎸夐挳琛?            with gr.Row():
-                toggle_memory_btn = gr.Button("馃懁 Memory", scale=0)
+            # 按钮行
+            with gr.Row():
+                toggle_memory_btn = gr.Button("👤 Memory", scale=0)
                 submit_btn = gr.Button("Send", variant="primary", elem_id="gim-submit-btn")
                 finish_session_btn = gr.Button("Finish Session", variant="secondary", interactive=False)
-                toggle_program_btn = gr.Button("馃幍 Program", scale=0)
+                toggle_program_btn = gr.Button("🎵 Program", scale=0)
             
             with gr.Row():
                 clear_btn = gr.Button("Clear Conversation")
                 save_btn = gr.Button("Save Session")
             
-            # 淇濆瓨鐘舵€佹枃鏈?            save_info = gr.Textbox(label="Save Status", interactive=False)
+            # 保存状态文本
+            save_info = gr.Textbox(label="Save Status", interactive=False)
         
-        # 鍙充晶鎶藉眽 - Music Program淇℃伅
+        # 右侧抽屉 - Music Program信息
         with gr.Column(scale=1, visible=False, elem_classes="right-drawer") as right_drawer:
             with gr.Column(elem_classes="drawer-content"):
-                program_title_en = gr.Markdown("### 馃幍 Music Program", visible=True)
-                program_title_zh = gr.Markdown("### 馃幍 闊充箰绋嬪簭", visible=False)
+                program_title_en = gr.Markdown("### 🎵 Music Program", visible=True)
+                program_title_zh = gr.Markdown("### 🎵 音乐程序", visible=False)
                 
-                # 杩涘害鏄剧ず鍖哄煙
-                progress_display = gr.Markdown("Waiting to generate music...\n绛夊緟鐢熸垚闊充箰...", elem_classes="progress-indicator")
+                # 进度显示区域
+                progress_display = gr.Markdown("Waiting to generate music...\n等待生成音乐...", elem_classes="progress-indicator")
                 
-                # Program淇℃伅鏄剧ず鍖哄煙
-                program_info_display = gr.Markdown("Program details will be displayed here.\n绋嬪簭璇︽儏灏嗗湪姝ゆ樉绀恒€?)
+                # Program信息显示区域
+                program_info_display = gr.Markdown("Program details will be displayed here.\n程序详情将在此显示。")
     
     def toggle_drawer(is_visible):
-        """鍒囨崲鎶藉眽鍙鎬х殑鍑芥暟"""
+        """切换抽屉可见性的函数"""
         return gr.update(visible=not is_visible)
 
     def build_washout_display(user_id: str, washout: dict = None, session: GIMTherapySession = None):
@@ -2278,7 +2361,7 @@ Please follow the steps below to complete the experiment:
         current_order = session.panas_state.get("current_order", [])
         for idx in range(20):
             item_key = current_order[idx] if idx < len(current_order) else None
-            label = session.get_panas_item_label(item_key, is_chinese) if item_key else (f"鏉＄洰 {idx + 1}" if is_chinese else f"PANAS Item {idx + 1}")
+            label = session.get_panas_item_label(item_key, is_chinese) if item_key else (f"条目 {idx + 1}" if is_chinese else f"PANAS Item {idx + 1}")
             update_kwargs = {"label": label}
             if reset_inputs:
                 update_kwargs["value"] = 3
@@ -2506,36 +2589,36 @@ Please follow the steps below to complete the experiment:
         )
 
     def format_memory_for_display(session: GIMTherapySession):
-        """鏍煎紡鍖栧苟杩斿洖鐢ㄦ埛璁板繂鐨凪arkdown鏂囨湰"""
+        """格式化并返回用户记忆的Markdown文本"""
         if not session or not session.memory:
-            return "No memory data yet.\n鏆傛棤璁板繂鏁版嵁銆?
+            return "No memory data yet.\n暂无记忆数据。"
         
-        # 鑾峰彇褰撳墠璇█
+        # 获取当前语言
         is_chinese = is_session_chinese(session)
         
         if is_chinese:
-            memory_text = "#### 鏈€杩戞儏缁姸鎬侊細\n"
-            emotions = [m.get('emotion', '鏈煡') for m in session.memory.memories.get('emotional_states', [])[-3:]]
+            memory_text = "#### 最近情绪状态：\n"
+            emotions = [m.get('emotion', '未知') for m in session.memory.memories.get('emotional_states', [])[-3:]]
             if emotions:
                 memory_text += "- " + "\n- ".join(emotions)
             else:
-                memory_text += "鏆傛棤璁板綍"
+                memory_text += "暂无记录"
             
-            memory_text += "\n\n#### 鐒︾偣鎰忓浘锛歕n"
-            focuses = [f.get('focus', '鏈煡') for f in session.memory.memories.get('focus_intentions', [])[-2:]]
+            memory_text += "\n\n#### 焦点意图：\n"
+            focuses = [f.get('focus', '未知') for f in session.memory.memories.get('focus_intentions', [])[-2:]]
             if focuses:
                 memory_text += "- " + "\n- ".join(focuses)
             else:
-                memory_text += "鏆傛棤璁板綍"
+                memory_text += "暂无记录"
                 
-            memory_text += "\n\n#### 闊充箰鍋忓ソ锛歕n"
+            memory_text += "\n\n#### 音乐偏好：\n"
             prefs = session.memory.memories.get('preferences', {}).get('music', [])
             if prefs:
                 for pref in prefs[-3:]:
-                    sentiment = "鍠滄" if pref.get('sentiment') == 'like' else "涓嶅枩娆?
-                    memory_text += f"- {sentiment} {pref.get('genre', '鏈煡椋庢牸')}\n"
+                    sentiment = "喜欢" if pref.get('sentiment') == 'like' else "不喜欢"
+                    memory_text += f"- {sentiment} {pref.get('genre', '未知风格')}\n"
             else:
-                memory_text += "鏆傛棤璁板綍"
+                memory_text += "暂无记录"
         else:
             memory_text = "#### Recent Emotions:\n"
             emotions = [m.get('emotion', 'unknown') for m in session.memory.memories.get('emotional_states', [])[-3:]]
@@ -2563,26 +2646,26 @@ Please follow the steps below to complete the experiment:
         return memory_text
 
     def format_program_for_display(session: GIMTherapySession):
-        """鏍煎紡鍖栧苟杩斿洖Music Program淇℃伅鐨凪arkdown鏂囨湰"""
+        """格式化并返回Music Program信息的Markdown文本"""
         if not session or not session.gim_program_result:
             is_chinese = is_session_chinese(session)
-            return "No program generated yet.\n鏆傛湭鐢熸垚绋嬪簭銆? if is_chinese else "No program generated yet."
+            return "No program generated yet.\n暂未生成程序。" if is_chinese else "No program generated yet."
         
         result = session.gim_program_result
         is_chinese = is_session_chinese(session)
         
         if is_chinese:
-            program_text = f"#### 娌荤枟鐩爣: {result['analysis'].get('therapeutic_goal', '鎯呮劅鎺㈢储')}\n\n"
-            program_text += f"#### 褰撳墠鎯呯华: {result['analysis'].get('current_emotion', '寰呮帰绱?)}\n\n"
-            program_text += "#### Program闃舵:\n"
+            program_text = f"#### 治疗目标: {result['analysis'].get('therapeutic_goal', '情感探索')}\n\n"
+            program_text += f"#### 当前情绪: {result['analysis'].get('current_emotion', '待探索')}\n\n"
+            program_text += "#### Program阶段:\n"
             for i, phase in enumerate(result.get('program', []), 1):
-                program_text += f"{i}. **{phase.get('phase', f'闃舵{i}')}** ({phase.get('duration_seconds', 0)}绉?\n"
-                program_text += f"   - 鐩殑: {phase.get('purpose', '鏈鏄?)}\n\n"
+                program_text += f"{i}. **{phase.get('phase', f'阶段{i}')}** ({phase.get('duration_seconds', 0)}秒)\n"
+                program_text += f"   - 目的: {phase.get('purpose', '未说明')}\n\n"
             
             if 'output' in result:
-                program_text += f"#### 鍚堟垚淇℃伅:\n"
-                program_text += f"- 鎬绘椂闀? {result['output'].get('total_seconds', 0)}绉抃n"
-                program_text += f"- 鏂囦欢: {os.path.basename(result['output'].get('file', ''))}\n"
+                program_text += f"#### 合成信息:\n"
+                program_text += f"- 总时长: {result['output'].get('total_seconds', 0)}秒\n"
+                program_text += f"- 文件: {os.path.basename(result['output'].get('file', ''))}\n"
         else:
             program_text = f"#### Therapeutic Goal: {result['analysis'].get('therapeutic_goal', 'Emotional exploration')}\n\n"
             program_text += f"#### Current Emotion: {result['analysis'].get('current_emotion', 'To be explored')}\n\n"
@@ -2600,7 +2683,7 @@ Please follow the steps below to complete the experiment:
     
 
     def process_dialogue_stream(message: str, session: GIMTherapySession):
-        """鍙鐞嗗璇濇祦"""
+        """只处理对话流"""
         if not session:
             session = GIMTherapySession()
             
@@ -2617,7 +2700,7 @@ Please follow the steps below to complete the experiment:
         yield session.chat_history, session, get_finish_session_button_update(session)
 
     def generate_music_stream(session: GIMTherapySession):
-        """鍦ㄩ渶瑕佹椂锛屾祦寮忕敓鎴愰煶涔愬苟鏇存柊UI"""
+        """在需要时，流式生成音乐并更新UI"""
         print("DEBUG current_state =", session.current_state)
         print("DEBUG music_selected =", session.music_selected)
         session.ensure_sam_pending_phase()
@@ -2625,14 +2708,14 @@ Please follow the steps below to complete the experiment:
         is_chinese = is_session_chinese(session)
         texts = get_ui_texts(is_chinese)
 
-        # 鍙湁鍦?music_imaging 闃舵涓旈煶涔愭湭閫夋嫨鏃舵墠鎵ц
+        # 只有在 music_imaging 阶段且音乐未选择时才执行
         if session.current_state != GIMState.MUSIC_IMAGING or session.music_selected:
             yield (
                 session.chat_history,
                 session,
                 format_memory_for_display(session),
                 format_program_for_display(session),
-                "Music generation not required.\n鏃犻渶鐢熸垚闊充箰銆?,
+                "Music generation not required.\n无需生成音乐。",
                 get_audio_player_update(session),
                 *get_sam_ui_updates(session),
                 *get_panas_ui_updates(session),
@@ -2641,16 +2724,17 @@ Please follow the steps below to complete the experiment:
             )
             return
 
-        # 瀹氫箟鍥炶皟鍑芥暟锛岀敤浜庡湪闊充箰鐢熸垚鏃舵洿鏂皊ession鐘舵€?        def progress_callback(stage, status, progress, data=None):
+        # 定义回调函数，用于在音乐生成时更新session状态
+        def progress_callback(stage, status, progress, data=None):
             is_chinese = is_session_chinese(session)
             callback_texts = get_ui_texts(is_chinese)
             
             stage_names = {
-                "analysis": "鍒嗘瀽" if is_chinese else "Analysis",
-                "design": "璁捐" if is_chinese else "Design", 
-                "music_search": "闊充箰妫€绱? if is_chinese else "Music Search",
-                "processing": "闊充箰澶勭悊" if is_chinese else "Music Processing",
-                "synthesis": "闊抽鍚堟垚" if is_chinese else "Audio Synthesis"
+                "analysis": "分析" if is_chinese else "Analysis",
+                "design": "设计" if is_chinese else "Design", 
+                "music_search": "音乐检索" if is_chinese else "Music Search",
+                "processing": "音乐处理" if is_chinese else "Music Processing",
+                "synthesis": "音频合成" if is_chinese else "Audio Synthesis"
             }
             
             session.progress_status = f"**{stage_names.get(stage, stage)}**: {status} ({progress:.0f}%)"
@@ -2661,7 +2745,7 @@ Please follow the steps below to complete the experiment:
             if data and stage == "synthesis" and progress == 100:
                 session.gim_program_result = data
         
-        # 浣跨敤绾跨▼杩愯鑰楁椂浠诲姟
+        # 使用线程运行耗时任务
         import threading
         session.append_guidance_message_once("music_generation_started", texts["music_start"])
         music_generation_thread = threading.Thread(
@@ -2670,9 +2754,9 @@ Please follow the steps below to complete the experiment:
         )
         music_generation_thread.start()
 
-        # 涓荤嚎绋嬪惊鐜鏌ヨ繘搴﹀苟yield鏇存柊
+        # 主线程循环检查进度并yield更新
         while music_generation_thread.is_alive():
-            time.sleep(0.5)  # 姣?.5绉掓洿鏂颁竴娆I
+            time.sleep(0.5)  # 每0.5秒更新一次UI
             yield (
                 session.chat_history, 
                 session, 
@@ -2686,29 +2770,31 @@ Please follow the steps below to complete the experiment:
                 get_finish_session_button_update(session)
             )
         
-        # 浠诲姟瀹屾垚
+        # 任务完成
         if session.selected_music_tracks or session.gim_program_result:
             session.music_selected = True
         else:
             session.music_selected = False
         
-        # 灏嗛煶涔愭挱鏀惧櫒娣诲姞鍒板璇濆巻鍙?        if session.selected_music_tracks:
+        # 将音乐播放器添加到对话历史
+        if session.selected_music_tracks:
             audio_path = session.selected_music_tracks[0].get('full_path')
             if audio_path:
                 audio_path = os.path.abspath(audio_path)
             if audio_path and os.path.exists(audio_path):
                 session.append_guidance_message_once("music_ready", texts["music_ready"])
                 session.append_guidance_message_once("music_experience", texts["music_experience"])
-                # 娣诲姞闊抽鏂囦欢浣滀负鍗曠嫭鐨勬秷鎭?        #        session.chat_history.append({"role": "assistant", "content": (audio_path,)})
+                # 添加音频文件作为单独的消息
+        #        session.chat_history.append({"role": "assistant", "content": (audio_path,)})
                 session.append_chat_message(
                     "assistant",
                     texts["play_music"],
                     phase=GIMState.MUSIC_IMAGING
                 )
 
-        # 鏈€缁堢殑UI鏇存柊
+        # 最终的UI更新
         is_chinese = is_session_chinese(session)
-        completed_message = "**瀹屾垚!** 鎮ㄧ殑闊充箰宸插噯澶囧氨缁€? if is_chinese else "**Completed!** Your music is ready."
+        completed_message = "**完成!** 您的音乐已准备就绪。" if is_chinese else "**Completed!** Your music is ready."
         yield (
             session.chat_history, 
             session, 
@@ -2722,7 +2808,8 @@ Please follow the steps below to complete the experiment:
             get_finish_session_button_update(session)
         )
 
-    # 鍒濆鍖栧嚱鏁?    def initialize_session():
+    # 初始化函数
+    def initialize_session():
         init_started_at = time.time()
         print("[startup] initialize_session start")
         participant_id = generate_participant_id()
@@ -2841,13 +2928,13 @@ Please follow the steps below to complete the experiment:
             *get_therapy_ui_updates(session, reset_inputs=True)
         )
     
-    # 娓呴櫎瀵硅瘽鍑芥暟
+    # 清除对话函数
     def clear_conversation(session: GIMTherapySession):
-        """娓呴櫎瀵硅瘽浣嗕繚鐣欒蹇?""
+        """清除对话但保留记忆"""
         if not session:
             session = GIMTherapySession()
             
-        # 閲嶇疆褰撳墠鐘舵€佷负PRELUDE
+        # 重置当前状态为PRELUDE
         session.current_state = GIMState.PRELUDE
         session.timestamp_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         session.music_selected = False
@@ -2858,11 +2945,13 @@ Please follow the steps below to complete the experiment:
         session.ablation_logged = False
         session.washout_pending = False
         
-        # 娓呴櫎杩涘害鏄剧ず鐩稿叧灞炴€?        session.progress_status = ""
+        # 清除进度显示相关属性
+        session.progress_status = ""
         session.phase_info = ""
         session.music_info = ""
         
-        # 閲嶆柊鍒濆鍖栨杩庢秷鎭?        session.chat_history = []
+        # 重新初始化欢迎消息
+        session.chat_history = []
         session.session_data = create_empty_session(user_id=session.user_id, condition=session.condition)
         session.session_data["condition_order"] = list(session.condition_order or [])
         session.session_data["session_number"] = session.session_number
@@ -2911,11 +3000,11 @@ Please follow the steps below to complete the experiment:
             *get_therapy_ui_updates(session, reset_inputs=True)
         )
     
-    # 淇濆瓨浼氳瘽鍑芥暟
+    # 保存会话函数
     def save_session(session: GIMTherapySession):
         if not session:
             is_chinese = is_session_chinese(session)
-            return "閿欒锛氫細璇濇湭鍒濆鍖? if is_chinese else "Error: Session not initialized"
+            return "错误：会话未初始化" if is_chinese else "Error: Session not initialized"
         if session.memory:
             memories_dir = os.path.join("data", "memories")
             os.makedirs(memories_dir, exist_ok=True)
@@ -2923,36 +3012,37 @@ Please follow the steps below to complete the experiment:
             memory_filename = f"{session.user_id}_{session_id}.json"
             session.memory.save_memories_to_file(os.path.join(memories_dir, memory_filename))
         is_chinese = is_session_chinese(session)
-        return "浼氳瘽宸叉垚鍔熶繚瀛橈紒" if is_chinese else "Session saved successfully!"
+        return "会话已成功保存！" if is_chinese else "Session saved successfully!"
     
-    # 璇█鍒囨崲澶勭悊鍑芥暟
+    # 语言切换处理函数
     def change_language(lang_choice: str, session: GIMTherapySession):
-        """鍒囨崲鐣岄潰璇█骞舵洿鏂版彁绀烘ā鏉?""
+        """切换界面语言并更新提示模板"""
         if not session:
             session = GIMTherapySession()
 
-        # 淇濆瓨鐪熷疄瀵硅瘽鍘嗗彶锛堥櫎浜嗘杩庢秷鎭級
+        # 保存真实对话历史（除了欢迎消息）
         true_chat_history = session.chat_history[1:] if len(session.chat_history) > 1 else []
 
-        # 璁剧疆璇█
+        # 设置语言
         is_chinese = lang_choice != "English"
         session.language = "zh" if is_chinese else "en"
         
-        # 閲嶆柊鍒濆鍖栨杩庢秷鎭?        session.chat_history = []
+        # 重新初始化欢迎消息
+        session.chat_history = []
         session.initialize_welcome_message()
         
-        # 鎭㈠鐪熷疄瀵硅瘽鍘嗗彶
+        # 恢复真实对话历史
         session.chat_history.extend(true_chat_history)
         session.ensure_sam_pending_phase()
         session.ensure_panas_pending_phase()
         
-        # 鍑嗗UI鏂囨湰
+        # 准备UI文本
         ui_text = {
-            "clear": "娓呴櫎瀵硅瘽" if is_chinese else "Clear Conversation",
-            "save": "淇濆瓨浼氳瘽" if is_chinese else "Save Session",
-            "memory": "馃懁 璁板繂" if is_chinese else "馃懁 Memory",
-            "program": "馃幍 绋嬪簭" if is_chinese else "馃幍 Program",
-            "save_status": "淇濆瓨鐘舵€? if is_chinese else "Save Status"
+            "clear": "清除对话" if is_chinese else "Clear Conversation",
+            "save": "保存会话" if is_chinese else "Save Session",
+            "memory": "👤 记忆" if is_chinese else "👤 Memory",
+            "program": "🎵 程序" if is_chinese else "🎵 Program",
+            "save_status": "保存状态" if is_chinese else "Save Status"
         }
         new_texts = get_ui_texts(is_chinese)
         chat_input_update, submit_update = get_chat_input_updates(session)
@@ -2960,7 +3050,7 @@ Please follow the steps below to complete the experiment:
         if getattr(session, "washout_pending", False):
             washout_display_value = build_washout_display(session.user_id, session.session_data, session=session)
         
-        # 杩斿洖鏇存柊
+        # 返回更新
         return (
             session.chat_history, session,
             format_memory_for_display(session),
@@ -2999,7 +3089,8 @@ Please follow the steps below to complete the experiment:
             gr.update(value=washout_display_value, visible=bool(washout_display_value))
         )
     
-    # 鍒濆鍖栧簲鐢?    demo.load(
+    # 初始化应用
+    demo.load(
         initialize_session,
         outputs=[
             session_state, user_id_input, participant_status, washout_display,
@@ -3029,7 +3120,7 @@ Please follow the steps below to complete the experiment:
         ]
     )
     
-    # 鎶藉眽鍒囨崲浜嬩欢
+    # 抽屉切换事件
     toggle_memory_btn.click(
         toggle_drawer,
         inputs=[left_drawer_visible],
@@ -3050,14 +3141,16 @@ Please follow the steps below to complete the experiment:
         outputs=[right_drawer_visible]
     )
     
-    # 鎻愪氦鎸夐挳浜嬩欢閾?    submit_btn.click(
+    # 提交按钮事件链
+    submit_btn.click(
         process_dialogue_stream,
         [msg_input, session_state],
         [chatbot, session_state, finish_session_btn]
     ).then(
         lambda: "",
         None,
-        [msg_input]  # 娓呯┖杈撳叆妗?    ).then(
+        [msg_input]  # 清空输入框
+    ).then(
         generate_music_stream,
         [session_state],
         [
@@ -3069,14 +3162,16 @@ Please follow the steps below to complete the experiment:
         ]
     )
     
-    # 杈撳叆妗嗗洖杞︽彁浜?    msg_input.submit(
+    # 输入框回车提交
+    msg_input.submit(
         process_dialogue_stream,
         [msg_input, session_state],
         [chatbot, session_state, finish_session_btn]
     ).then(
         lambda: "",
         None,
-        [msg_input]  # 娓呯┖杈撳叆妗?    ).then(
+        [msg_input]  # 清空输入框
+    ).then(
         generate_music_stream,
         [session_state],
         [
@@ -3088,7 +3183,7 @@ Please follow the steps below to complete the experiment:
         ]
     )
     
-    # 娓呴櫎瀵硅瘽鎸夐挳
+    # 清除对话按钮
     clear_btn.click(
         clear_conversation,
         [session_state],
@@ -3104,7 +3199,7 @@ Please follow the steps below to complete the experiment:
         ]
     )
     
-    # 淇濆瓨浼氳瘽鎸夐挳
+    # 保存会话按钮
     save_btn.click(
         save_session,
         [session_state],
@@ -3112,7 +3207,7 @@ Please follow the steps below to complete the experiment:
     )
 
     
-    # 璇█鍒囨崲浜嬩欢
+    # 语言切换事件
     language_radio.change(
         change_language,
         inputs=[language_radio, session_state],
@@ -3204,25 +3299,39 @@ Please follow the steps below to complete the experiment:
 
 if __name__ == "__main__":
     try:
-        # 娣诲姞蹇呰鐨勫弬鏁颁互鏀寔鏂囦欢浼犺緭
+        # Public demo deployment settings for Hugging Face Spaces.
+        # DEMO_PASSWORD enables Gradio password protection.
+        # DEMO_RATE_LIMIT_* controls lightweight IP-based rate limiting.
+        os.makedirs("output/kimusic_generated", exist_ok=True)
+
+        demo_username = os.getenv("DEMO_USERNAME", "reviewer")
+        demo_password = os.getenv("DEMO_PASSWORD", "")
+        demo_auth = (demo_username, demo_password) if demo_password else None
+
+        if hasattr(demo, "queue"):
+            demo.queue(
+                default_concurrency_limit=int(os.getenv("DEMO_CONCURRENCY_LIMIT", "1")),
+                max_size=int(os.getenv("DEMO_QUEUE_MAX_SIZE", "4")),
+            )
+
         demo.launch(
-            share=True,
-            server_name="0.0.0.0",  # Server/public launch
-            server_port=7860,       # Fixed port for deployment
-            show_error=True,        # 鏄剧ず璇︾粏閿欒淇℃伅
+            server_name=os.getenv("GRADIO_SERVER_NAME", "0.0.0.0"),
+            server_port=int(os.getenv("PORT", os.getenv("GRADIO_SERVER_PORT", "7860"))),
+            auth=demo_auth,
+            auth_message="Kimusic EMNLP demo. Please use the reviewer password provided by the authors.",
+            show_error=False,
             show_api=False,
-            quiet=False,            # 鏄剧ず璇︾粏鏃ュ織
+            quiet=False,
+            max_threads=int(os.getenv("DEMO_MAX_THREADS", "4")),
             allowed_paths=[
                 os.path.abspath("output"),
                 os.path.abspath("output/kimusic_generated"),
-                os.path.abspath("../toy_dataset/mp3")
-            ]
+                os.path.abspath("demo_audio")
+            ],
+            app_kwargs={"middleware": make_security_middleware()},
         )
     except Exception as e:
-        print(f"鍚姩搴旂敤澶辫触: {e}")
+        print(f"启动应用失败: {e}")
     finally:
-        # 娓呯悊宸ヤ綔鍦ㄨ繖閲屼笉闇€瑕佺壒瀹氱殑therapy_session瀹炰緥
-        print("搴旂敤宸插叧闂?) 
-
-
-
+        # 清理工作在这里不需要特定的therapy_session实例
+        print("应用已关闭") 
