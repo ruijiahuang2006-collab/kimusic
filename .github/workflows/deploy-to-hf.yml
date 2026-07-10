@@ -40,23 +40,26 @@ jobs:
 
           cd hf_space
 
-          # Force a Hugging Face Spaces dependency set compatible with Gradio 4.
-          # Gradio 4.44.1 imports HfFolder from huggingface_hub.
-          # Newer huggingface_hub versions removed HfFolder, so we pin 0.36.2.
+          # Force a stable dependency set for the original Gradio 4 app.
+          # Do not let Hugging Face Spaces install newest FastAPI / Starlette / huggingface_hub.
           if [ -f requirements.txt ]; then
-            grep -viE '^[[:space:]]*gradio([<=>[:space:]\[]|$)' requirements.txt > requirements_hf.txt || true
-            grep -viE '^[[:space:]]*gradio[-_]?client([<=>[:space:]\[]|$)' requirements_hf.txt > requirements_hf_2.txt || true
-            grep -viE '^[[:space:]]*huggingface[-_]?hub([<=>[:space:]\[]|$)' requirements_hf_2.txt > requirements.txt || true
-            rm -f requirements_hf.txt requirements_hf_2.txt
+            grep -viE '^[[:space:]]*gradio([<=>[:space:]\[]|$)' requirements.txt > requirements_hf_1.txt || true
+            grep -viE '^[[:space:]]*gradio[-_]?client([<=>[:space:]\[]|$)' requirements_hf_1.txt > requirements_hf_2.txt || true
+            grep -viE '^[[:space:]]*huggingface[-_]?hub([<=>[:space:]\[]|$)' requirements_hf_2.txt > requirements_hf_3.txt || true
+            grep -viE '^[[:space:]]*fastapi([<=>[:space:]\[]|$)' requirements_hf_3.txt > requirements_hf_4.txt || true
+            grep -viE '^[[:space:]]*starlette([<=>[:space:]\[]|$)' requirements_hf_4.txt > requirements.txt || true
+            rm -f requirements_hf_1.txt requirements_hf_2.txt requirements_hf_3.txt requirements_hf_4.txt
           else
             touch requirements.txt
           fi
 
           printf '\n%s\n' 'gradio==4.44.1' >> requirements.txt
           printf '%s\n' 'huggingface_hub==0.36.2' >> requirements.txt
+          printf '%s\n' 'fastapi==0.112.2' >> requirements.txt
+          printf '%s\n' 'starlette==0.37.2' >> requirements.txt
 
           echo "Final Hugging Face Space dependency pins:"
-          grep -Ei '^[[:space:]]*(gradio|huggingface[-_]?hub)' requirements.txt || true
+          grep -Ei '^[[:space:]]*(gradio|huggingface[-_]?hub|fastapi|starlette)' requirements.txt || true
 
           if [ -f README.md ]; then
             cp README.md README_body.md
