@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import json
 import os
 import numpy as np
@@ -6,13 +6,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
 import time
 import http.client
+from urllib.parse import urlparse
 import re
 from collections import Counter
 import logging
 from music_document import MusicDocumentManager
 from hyper_parameters import MODEL_NAME, MAX_TOKENS_RESPONSE
 
-# 閰嶇疆鏃ュ織
+# 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -22,17 +23,17 @@ class MusicDatabase:
         Initialize the music database with the given JSON file path.
         
         Args:
-            json_file_path: 闊充箰JSON鏁版嵁鏂囦欢璺緞
-            use_elasticsearch: 鏄惁浣跨敤Elasticsearch杩涜鎼滅储锛堝鏋滃彲鐢級
-            es_host: Elasticsearch涓绘満鍦板潃
-            es_index: Elasticsearch绱㈠紩鍚嶇О
+            json_file_path: 音乐JSON数据文件路径
+            use_elasticsearch: 是否使用Elasticsearch进行搜索（如果可用）
+            es_host: Elasticsearch主机地址
+            es_index: Elasticsearch索引名称
         """
         self.json_file_path = json_file_path
         self.music_data = []
         self.feature_vectors = None
         self.scaler = StandardScaler()
         
-        # 娣诲姞ES鏀寔
+        # 添加ES支持
         self.use_elasticsearch = use_elasticsearch
         self.es_host = es_host
         self.es_index = es_index
@@ -71,89 +72,102 @@ class MusicDatabase:
         self.tempo_values = []
         self.dynamics_values = []
         
-        # 鍔犺浇鏁版嵁
+        # 加载数据
         self.load_music_data()
         self.extract_unique_attributes()
         
-        # 鍒濆鍖朎S
+        # 初始化ES
         if use_elasticsearch:
             self.init_elasticsearch(rebuild_index)
-            # 妫€鏌ユ槸鍚﹂渶瑕侀噸寤虹储寮曟垨绱㈠紩鏄惁涓虹┖
+            # 检查是否需要重建索引或索引是否为空
             if self.use_elasticsearch:
                 if rebuild_index or self.is_elasticsearch_empty():
                     if rebuild_index:
-                        logger.info("閲嶅缓绱㈠紩妯″紡锛屽紑濮嬪鍏ラ煶涔愭暟鎹?..")
+                        logger.info("重建索引模式，开始导入音乐数据...")
                     else:
-                        logger.info("Elasticsearch绱㈠紩涓虹┖锛屽紑濮嬪鍏ラ煶涔愭暟鎹?..")
+                        logger.info("Elasticsearch索引为空，开始导入音乐数据...")
                     self.import_music_to_elasticsearch()
                 else:
-                    logger.info("Elasticsearch绱㈠紩宸叉湁鏁版嵁锛岃烦杩囧鍏?)
+                    logger.info("Elasticsearch索引已有数据，跳过导入")
 
-        self.conn = http.client.HTTPSConnection("api.openai.com")
+        # LLM API endpoint is configured at deployment time.
+        # Do not hard-code provider-specific endpoints or API keys in the public release.
+        self.api_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        parsed_base_url = urlparse(self.api_base_url)
+        self.api_scheme = parsed_base_url.scheme or "https"
+        self.api_host = parsed_base_url.netloc
+        self.api_base_path = parsed_base_url.path.rstrip("/")
+        if not self.api_host:
+            raise ValueError("OPENAI_BASE_URL must be a valid URL, e.g., https://example.com/v1")
+        if self.api_scheme != "https":
+            logger.warning("OPENAI_BASE_URL is not using HTTPS; this is not recommended for deployment.")
+        self.conn = http.client.HTTPSConnection(self.api_host)
     
     def init_elasticsearch(self, rebuild_index=False):
-        """鍒濆鍖朎lasticsearch瀹㈡埛绔?""
+        """初始化Elasticsearch客户端"""
         try:
-            # 灏濊瘯浣跨敤Music Document绠＄悊鍣?            self.MusicDocumentManager = MusicDocumentManager(es_host=self.es_host, rebuild_index=rebuild_index)
-            logger.info("Music Document绠＄悊鍣ㄥ垵濮嬪寲鎴愬姛")
+            # 尝试使用Music Document管理器
+            self.MusicDocumentManager = MusicDocumentManager(es_host=self.es_host, rebuild_index=rebuild_index)
+            logger.info("Music Document管理器初始化成功")
             self.use_elasticsearch = True
         except Exception as e:
-            logger.warning(f"鍒濆鍖朚usic Document绠＄悊鍣ㄥけ璐? {str(e)}")
-            logger.warning("灏嗕娇鐢ㄦ湰鍦伴煶涔愭暟鎹绱?)
+            logger.warning(f"初始化Music Document管理器失败: {str(e)}")
+            logger.warning("将使用本地音乐数据检索")
             self.use_elasticsearch = False
     
     def import_music_to_elasticsearch(self):
-        """灏嗛煶涔愭暟鎹鍏ュ埌Elasticsearch"""
+        """将音乐数据导入到Elasticsearch"""
         if not self.use_elasticsearch or not self.MusicDocumentManager:
-            logger.warning("Elasticsearch涓嶅彲鐢紝璺宠繃鏁版嵁瀵煎叆")
+            logger.warning("Elasticsearch不可用，跳过数据导入")
             return False
         
         try:
-            logger.info("寮€濮嬪皢闊充箰鏁版嵁瀵煎叆鍒癊lasticsearch...")
+            logger.info("开始将音乐数据导入到Elasticsearch...")
             success_count = 0
             failed_count = 0
             
             for i, music_item in enumerate(self.music_data):
                 try:
-                    # 鍒涘缓Music鏂囨。瀵硅薄
+                    # 创建Music文档对象
                     music_doc = self.MusicDocumentManager.create_music_document(music_item)
                     
                     if music_doc:
-                        # 淇濆瓨鍒癊lasticsearch
+                        # 保存到Elasticsearch
                         if self.MusicDocumentManager.save_music_document(music_doc):
                             success_count += 1
-                            if success_count % 10 == 0:  # 姣?0鏉¤褰曚竴娆¤繘搴?                                logger.info(f"宸叉垚鍔熷鍏?{success_count} 鏉¤褰?)
+                            if success_count % 10 == 0:  # 每10条记录一次进度
+                                logger.info(f"已成功导入 {success_count} 条记录")
                         else:
                             failed_count += 1
-                            logger.error(f"淇濆瓨闊充箰鏂囨。澶辫触: {music_item.get('title', 'Unknown')}")
+                            logger.error(f"保存音乐文档失败: {music_item.get('title', 'Unknown')}")
                     else:
                         failed_count += 1
-                        logger.error(f"鍒涘缓闊充箰鏂囨。澶辫触: {music_item.get('title', 'Unknown')}")
+                        logger.error(f"创建音乐文档失败: {music_item.get('title', 'Unknown')}")
                         
                 except Exception as e:
                     failed_count += 1
-                    logger.error(f"澶勭悊闊充箰鏁版嵁鏃跺嚭閿? {str(e)}")
+                    logger.error(f"处理音乐数据时出错: {str(e)}")
             
-            logger.info(f"Elasticsearch鏁版嵁瀵煎叆瀹屾垚 - 鎴愬姛: {success_count}, 澶辫触: {failed_count}")
+            logger.info(f"Elasticsearch数据导入完成 - 成功: {success_count}, 失败: {failed_count}")
             return success_count > 0
             
         except Exception as e:
-            logger.error(f"瀵煎叆闊充箰鏁版嵁鍒癊lasticsearch鏃跺嚭閿? {str(e)}")
+            logger.error(f"导入音乐数据到Elasticsearch时出错: {str(e)}")
             return False
     
     def is_elasticsearch_empty(self):
-        """妫€鏌lasticsearch绱㈠紩鏄惁涓虹┖"""
+        """检查Elasticsearch索引是否为空"""
         if not self.use_elasticsearch or not self.MusicDocumentManager:
             return True
         
         try:
-            # 鑾峰彇绱㈠紩涓殑鏂囨。鏁伴噺
+            # 获取索引中的文档数量
             all_music = self.MusicDocumentManager.get_all_music()
             is_empty = len(all_music) == 0
-            logger.info(f"Elasticsearch绱㈠紩涓湁 {len(all_music)} 鏉¤褰?)
+            logger.info(f"Elasticsearch索引中有 {len(all_music)} 条记录")
             return is_empty
         except Exception as e:
-            logger.error(f"妫€鏌lasticsearch绱㈠紩鐘舵€佹椂鍑洪敊: {str(e)}")
+            logger.error(f"检查Elasticsearch索引状态时出错: {str(e)}")
             return True
     
     def load_music_data(self):
@@ -295,18 +309,18 @@ class MusicDatabase:
         # If cache is empty, try using Music Document
         if self.use_elasticsearch and self.MusicDocumentManager:
             try:
-                logger.info(f"浣跨敤Music Document鑾峰彇{attribute_type}灞炴€ч€夐」")
+                logger.info(f"使用Music Document获取{attribute_type}属性选项")
                 options = self.MusicDocumentManager.get_attribute_options(attribute_type, max_items)
                 if options:
-                    logger.info(f"Music Document杩斿洖浜唟len(options)}涓獅attribute_type}閫夐」")
+                    logger.info(f"Music Document返回了{len(options)}个{attribute_type}选项")
                     # Update cache with new values
                     if attribute_type in cache_map:
                         cache_map[attribute_type] = options
                         self._last_cache_update = time.time()
                     return options
             except Exception as e:
-                logger.error(f"Music Document鑾峰彇灞炴€ч€夐」澶辫触: {str(e)}")
-                logger.warning("鍥為€€鍒版湰鍦板睘鎬ч€夐」")
+                logger.error(f"Music Document获取属性选项失败: {str(e)}")
+                logger.warning("回退到本地属性选项")
         
         # If both cache and Music Document fail, fall back to local counters
         counter_map = {
@@ -511,7 +525,7 @@ class MusicDatabase:
         Returns:
             A dictionary with music selection criteria
         """
-        # 鐩存帴鐢ㄤ紶鍏ョ殑system_prompt鍜寀ser_prompt
+        # 直接用传入的system_prompt和user_prompt
         llm_messages = [
             {
                 "role": "system",
@@ -536,10 +550,11 @@ class MusicDatabase:
                 'Content-Type': 'application/json'
             }
             
-            self.conn.request("POST", "/v1/messages", payload, headers)
+            request_path = f"{self.api_base_path}/messages" if self.api_base_path else "/v1/messages"
+            self.conn.request("POST", request_path, payload, headers)
             start_time = time.time()
-            response = self.conn.getresponse()  ##todo: 浼樺寲music generate prompt鍜宻ystem prompt鏈夌偣閲嶅  
-            #鍔犲揩鐢熸垚鏃堕棿锛屼篃璁稿彲浠ュ湪涓婁竴涓樁娈靛氨鍚屾鐨勮繘琛岄煶涔愮殑椋庢牸鐢熸垚
+            response = self.conn.getresponse()  ##todo: 优化music generate prompt和system prompt有点重复  
+            #加快生成时间，也许可以在上一个阶段就同步的进行音乐的风格生成
             end_time = time.time()
             response_data = json.loads(response.read().decode("utf-8"))
             print(f"Time taken for llm generate: {end_time - start_time} seconds")
@@ -708,45 +723,49 @@ class MusicDatabase:
     
     def retrieve_music_for_therapy(self, criteria, num_tracks=4):
         """
-        浣跨敤Elasticsearch妫€绱㈤煶涔愩€?        浼樺厛浣跨敤Music Document锛屽鏋滀笉鍙敤鍒欏洖閫€鍒板師鏈塃S闆嗘垚鎴栨湰鍦版悳绱€?        
+        使用Elasticsearch检索音乐。
+        优先使用Music Document，如果不可用则回退到原有ES集成或本地搜索。
+        
         Args:
-            criteria: 闊充箰閫夋嫨鏍囧噯
-            num_tracks: 瑕佽繑鍥炵殑鏇茬洰鏁伴噺
+            criteria: 音乐选择标准
+            num_tracks: 要返回的曲目数量
             
         Returns:
-            鍖归厤鐨勯煶涔愬垪琛?        """
-        # 棣栧厛灏濊瘯浣跨敤Music Document绠＄悊鍣?        if self.use_elasticsearch and self.MusicDocumentManager:
+            匹配的音乐列表
+        """
+        # 首先尝试使用Music Document管理器
+        if self.use_elasticsearch and self.MusicDocumentManager:
             try:
-                logger.info("浣跨敤Music Document鎼滅储闊充箰")
+                logger.info("使用Music Document搜索音乐")
                 tracks = self.MusicDocumentManager.search_music(criteria, size=num_tracks)
                 
                 if tracks and len(tracks) > 0:
-                    logger.info(f"Music Document杩斿洖浜唟len(tracks)}涓粨鏋?)
+                    logger.info(f"Music Document返回了{len(tracks)}个结果")
                     return tracks
                 else:
-                    logger.warning("Music Document娌℃湁杩斿洖缁撴灉锛屽皾璇曞叾浠栨柟娉?)
+                    logger.warning("Music Document没有返回结果，尝试其他方法")
             except Exception as e:
-                logger.error(f"Music Document鎼滅储鍑洪敊: {str(e)}")
-                logger.warning("灏濊瘯鍏朵粬鎼滅储鏂规硶")
+                logger.error(f"Music Document搜索出错: {str(e)}")
+                logger.warning("尝试其他搜索方法")
         
-        # # 灏濊瘯浣跨敤鍘熸湁鐨凟S闆嗘垚
+        # # 尝试使用原有的ES集成
         # if self.use_elasticsearch and self.es_client:
         #     try:
-        #         logger.info("浣跨敤鍘熸湁Elasticsearch闆嗘垚鎼滅储闊充箰")
+        #         logger.info("使用原有Elasticsearch集成搜索音乐")
         #         tracks = self.es_client.search_music(criteria, size=num_tracks)
                 
         #         if tracks and len(tracks) > 0:
-        #             logger.info(f"鍘熸湁ES闆嗘垚杩斿洖浜唟len(tracks)}涓粨鏋?)
+        #             logger.info(f"原有ES集成返回了{len(tracks)}个结果")
         #             return tracks
         #         else:
-        #             logger.warning("鍘熸湁ES闆嗘垚娌℃湁杩斿洖缁撴灉锛屽洖閫€鍒版湰鍦版悳绱?)
+        #             logger.warning("原有ES集成没有返回结果，回退到本地搜索")
         #     except Exception as e:
-        #         logger.error(f"鍘熸湁ES闆嗘垚鎼滅储鍑洪敊: {str(e)}")
-        #         logger.warning("鍥為€€鍒版湰鍦版悳绱?)
+        #         logger.error(f"原有ES集成搜索出错: {str(e)}")
+        #         logger.warning("回退到本地搜索")
         
-        # 鏈湴鎼滅储锛堜綔涓哄鐢級
-        #raise NotImplementedError("鏈湴鎼滅储鏈疄鐜?)
-        logger.info("浣跨敤鏈湴绠楁硶妫€绱㈤煶涔?)
+        # 本地搜索（作为备用）
+        #raise NotImplementedError("本地搜索未实现")
+        logger.info("使用本地算法检索音乐")
         track_scores = []
         
         # Score each track based on criteria match
