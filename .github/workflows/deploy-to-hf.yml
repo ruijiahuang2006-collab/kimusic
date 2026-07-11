@@ -68,7 +68,7 @@ jobs:
           fi
 
           printf '%s\n' '---' > README.md
-          printf '%s\n' 'title: Kimusic Demo' >> README.md
+          printf '%s\n' 'title: GIMFlow Demo' >> README.md
           printf '%s\n' 'emoji: 🎵' >> README.md
           printf '%s\n' 'colorFrom: blue' >> README.md
           printf '%s\n' 'colorTo: indigo' >> README.md
@@ -93,7 +93,7 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "github-actions"
           git add .
-          git commit -m "Deploy Kimusic demo"
+          git commit -m "Deploy GIMFlow demo"
           git branch -M main
           git remote add hf https://ritalala:${HF_TOKEN}@huggingface.co/spaces/ritalala/kimusic-demo
           git push --force hf main

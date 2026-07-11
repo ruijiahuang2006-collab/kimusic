@@ -4,7 +4,7 @@
 
 This document provides the full transcript of the demonstration session shown in the accompanying video (`demo_video_recording_guide.md`). The video shows a shortened representative exchange due to the CFP 2:30 time limit; this transcript records the complete four-phase session in full.
 
-The session is a first-author-performed demonstration, not a real participant session. It is provided to give reviewers and reproducers a faithful sense of the facilitator dialogue style produced by the Kimusic system across all four phases.
+The session is a first-author-performed demonstration, not a real participant session. It is provided to give reviewers and reproducers a faithful sense of the facilitator dialogue style produced by the GIMFlow system across all four phases.
 
 **Note on wording:** Some wording in this transcript (for example, "GIM therapy assistant" and "therapeutic journey" in the opening system message) reflects the deployed demonstration interface used during the studies. The released prompt templates in `prompts.py` use non-clinical wording aligned with the paper's framing, as disclosed in §8 (Limitations) and Appendix A of the paper.
 
@@ -163,7 +163,7 @@ As we close, take one more slow breath in… and let it out gently. Feel the sup
 
 ## Notes on Facilitator Style
 
-Kimusic's dialogue prompts are designed to enact a GIM-inspired facilitator role rather than a directive or diagnostic role. Two patterns are visible in this transcript:
+GIMFlow's dialogue prompts are designed to enact a GIM-inspired facilitator role rather than a directive or diagnostic role. Two patterns are visible in this transcript:
 
 **Extension over interpretation.** System responses expand and reflect what the participant has said ("the small weight you can notice without being trapped by it", "the trees no longer closing in but standing protectively nearby"), rather than assigning clinical labels or offering interpretations. This aligns with the receptive-style GIM tradition described in Grocke and Wigram (2007).
 
@@ -175,4 +175,4 @@ Kimusic's dialogue prompts are designed to enact a GIM-inspired facilitator role
 
 ## Note on Deployed vs Released Wording
 
-The Kimusic prompts used in the studies (including this demonstration) include some therapist-oriented terminology inherited from the practical origins of GIM as a therapy method. The released prompts distributed with this repository use non-clinical wording aligned with the paper's framing. This distinction is disclosed in §8 of the paper and in Appendix A. The facilitator style patterns illustrated above are preserved in both versions; only the surface labels differ.
+The GIMFlow prompts used in the studies (including this demonstration) include some therapist-oriented terminology inherited from the practical origins of GIM as a therapy method. The released prompts distributed with this repository use non-clinical wording aligned with the paper's framing. This distinction is disclosed in §8 of the paper and in Appendix A. The facilitator style patterns illustrated above are preserved in both versions; only the surface labels differ.

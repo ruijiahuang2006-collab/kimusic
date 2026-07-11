@@ -1,12 +1,24 @@
-﻿# Kimusic
+# GIMFlow
+
+## Naming
+
+**GIMFlow** refers to the overall interactive guided-imagery music system.
+
+**Kimusic** refers specifically to the blueprint-based music generation module and to the experimental Kimusic condition. The repository name and selected implementation identifiers retain `kimusic` for compatibility with the original module structure.
 
 **An LLM-Guided GIM-Inspired Music Agent**
 
 *System Demonstration submission to EMNLP 2026*
 
-Kimusic is a non-clinical research demonstration that combines an LLM-guided dialogue workflow with symbolic music rendering. The system enacts a phase-scripted four-phase dialogue (Prelude, Induction, Music & Imaging, Postlude), estimates the user's current valence–arousal state, plans a target-directed four-waypoint trajectory, and delivers music via either blueprint-conditioned symbolic rendering (Kimusic condition) or metadata-based retrieval (Baseline condition).
+GIMFlow is a non-clinical research demonstration that combines an LLM-guided dialogue workflow with symbolic music rendering. The system enacts a phase-scripted four-phase dialogue (Prelude, Induction, Music & Imaging, Postlude), estimates the user's current valence–arousal state, plans a target-directed four-waypoint trajectory, and delivers music via either blueprint-conditioned symbolic rendering (Kimusic condition) or metadata-based retrieval (Baseline condition).
 
 ---
+
+## Public Release Scope
+
+This repository is a sanitized public release for the EMNLP Demo submission. Private participant data, raw session logs, API keys, generated outputs, and copyrighted baseline audio assets are intentionally excluded.
+
+The public code preserves the GIMFlow system implementation and the Kimusic music-generation module. The full Baseline condition requires a private local music database and is available only in the secured server deployment.
 
 ## Demo Materials
 
@@ -103,7 +115,7 @@ Study 1 (formative pilot, N=23) used a written recruitment notice describing pur
 
 ### Ethical Framing
 
-Kimusic is a **research demonstration and not a substitute for professional mental-health care**. The recorded session shown in the video is a demonstration performed by the first author acting as a participant, not a real research session, and no real participant data is shown in the video.
+GIMFlow is a **research demonstration and not a substitute for professional mental-health care**. The recorded session shown in the video is a demonstration performed by the first author acting as a participant, not a real research session, and no real participant data is shown in the video.
 
 ---
 
@@ -119,7 +131,7 @@ For the case study discussed in §5.5 of the paper, extended details are provide
 
 ## Audio and SoundFont Attribution
 
-Kimusic demo audio is provided in `demo_audio/` when available. The FluidR3_GM SoundFont license text is provided in `soundfonts/FluidR3_GM_LICENSE.txt`. Demo audio rendered with this SoundFont is distributed subject to the terms in that file.
+GIMFlow demo audio is provided in `demo_audio/` when available. The FluidR3_GM SoundFont license text is provided in `soundfonts/FluidR3_GM_LICENSE.txt`. Demo audio rendered with this SoundFont is distributed subject to the terms in that file.
 
 The baseline audio library is not redistributed because track-level redistribution rights cannot be uniformly guaranteed under the original sources' licensing terms.
 
@@ -159,3 +171,4 @@ The following files provide the main reviewer-facing artifacts referenced by the
 ## Language Note
 
 This public release is intended for English-language demonstration, review, and reproducibility. Some legacy Chinese UI strings from the deployed study interface are not maintained in the public release code; the paper, README, documentation, demo transcript, prompts, and reviewer-facing artifacts are provided in English.
+

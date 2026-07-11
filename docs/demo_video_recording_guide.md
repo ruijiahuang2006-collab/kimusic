@@ -2,14 +2,14 @@
 
 **Watch the video**: https://youtu.be/lompQnNoJlM (2:16, YouTube unlisted)
 
-This document describes the recording procedure for the Kimusic demonstration video accompanying the EMNLP 2026 System Demonstrations submission. The video shows a complete session walkthrough covering all four dialogue phases (Prelude, Induction, Music & Imaging, Postlude), music generation, and pre/post assessments.
+This document describes the recording procedure for the GIMFlow demonstration video accompanying the EMNLP 2026 System Demonstrations submission. The video shows a complete session walkthrough covering all four dialogue phases (Prelude, Induction, Music & Imaging, Postlude), music generation, and pre/post assessments.
 
 ## Video Specifications
 
 - **Total length**: approximately 2:15 (within the CFP 2:30 limit)
 - **Format**: mp4, YouTube unlisted upload
 - **Narration**: live voice-over by the first author (Rita Huang)
-- **Screencast target**: the deployed Kimusic web interface
+- **Screencast target**: the deployed GIMFlow web interface
 - **Language**: English (system dialogue and narration)
 - **Music playback**: at least 15 seconds of audible generated music included
 
@@ -35,7 +35,7 @@ The video does not cover:
 
 Introduction to the system:
 
-> "Hi, I'm Rita. This is Kimusic, a non-clinical research demonstration that combines an LLM-guided dialogue workflow with symbolic music rendering. Let me walk you through one complete session."
+> "Hi, I'm Rita. This is GIMFlow, a non-clinical research demonstration that combines an LLM-guided dialogue workflow with symbolic music rendering. Let me walk you through one complete session."
 
 ### Section 2 — Prelude and Induction
 
@@ -75,7 +75,7 @@ Music plays audibly for approximately 15 seconds, during which the participant e
 
 ### Section 6 — Session 2 protocol and resources
 
-> "Session 2 follows the same four-phase protocol with the alternate condition, following a five-minute washout period. After both sessions, participants complete SUS and TX questionnaires. Kimusic was evaluated in two within-subject studies. Paper, code, and demo audio are linked in the video description. Thanks for watching."
+> "Session 2 follows the same four-phase protocol with the alternate condition, following a five-minute washout period. After both sessions, participants complete SUS and TX questionnaires. GIMFlow was evaluated in two within-subject studies. Paper, code, and demo audio are linked in the video description. Thanks for watching."
 
 ## Visual Highlights
 
